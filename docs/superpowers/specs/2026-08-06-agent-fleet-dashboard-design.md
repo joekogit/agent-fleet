@@ -26,7 +26,7 @@ Both sources were confirmed to exist on this machine on 2026-08-06.
 
 - `~/.claude/sessions/<PID>.json` — one file per running process. Fields:
   `pid`, `sessionId`, `cwd`, `startedAt`, `procStart`, `version`, `kind`,
-  `entrypoint`, `name` (derived, e.g. `retro-game-ea`), `nameSource`,
+  `entrypoint`, `name` (derived, e.g. `project-a-a0`), `nameSource`,
   `status` (`busy` | `idle`), `updatedAt`, `statusUpdatedAt`.
   The existence of the file plus a live `pid` is the only true liveness signal
   available. `updatedAt` is **not** a heartbeat — see "Status ladder" below.
@@ -130,9 +130,9 @@ Measured on this machine, all three processes alive:
 
 ```
     pid alive status  updatedAt age   name
-  14501   YES   busy          0.2h   agent-action-a0
-   7377   YES   idle         13.2h   pictures-63
-  77660   YES   idle          2.6h   retro-game-ea
+  <pid>   YES   busy          0.2h   project-a-a0
+  <pid>   YES   idle         13.2h   project-b-63
+  <pid>   YES   idle          2.6h   project-c-ea
 ```
 
 Two perfectly live sessions were being rendered `stale` — "no heartbeat for 13h" — and
@@ -268,7 +268,7 @@ The dashboard is a local web page served by a background Python process. It is n
 native application bundle.
 
 **Server lifecycle** — a `launchd` user agent at
-`~/Library/LaunchAgents/com.joekocovsky.agentfleet.plist`:
+`~/Library/LaunchAgents/com.agentfleet.dashboard.plist`:
 
 - `RunAtLoad: true` — starts at login
 - `KeepAlive: true` — restarts if it crashes

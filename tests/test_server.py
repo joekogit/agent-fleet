@@ -149,6 +149,43 @@ class ServeBindingTest(unittest.TestCase):
     def test_explicit_loopback_host_is_allowed(self):
         self.assertEqual(self._serve(port=0, host="localhost")[0], ("localhost", 0))
 
+    def test_hostname_merely_starting_with_127_is_refused(self):
+        """`127.0.0.1.evil.com` is a DNS name an attacker controls.
+
+        A prefix test on "127." accepts it and then hands the name to the
+        resolver, which can point it anywhere. Only real loopback IP literals
+        may pass.
+        """
+        for host in ("127.0.0.1.evil.com", "127.example.com", "127.0.0.1x"):
+            with self.subTest(host=host):
+                with self.assertRaises(SystemExit):
+                    self._serve(port=0, host=host)
+
+    def test_other_loopback_addresses_are_allowed(self):
+        self.assertEqual(self._serve(port=0, host="127.0.0.2")[0], ("127.0.0.2", 0))
+
+
+class LoopbackGuardAgreementTest(unittest.TestCase):
+    """The bind guard and the Host guard must accept the same set of hosts.
+
+    They disagreed before: the bind guard allowed all of 127.0.0.0/8 while
+    the Host check was an exact-match list, so `--host 127.0.0.2` would start
+    successfully and then reject every request it received.
+    """
+
+    def test_every_bindable_host_is_answerable(self):
+        for host in ("127.0.0.1", "127.0.0.2", "localhost", "::1"):
+            with self.subTest(host=host):
+                self.assertTrue(server_module.is_loopback(host))
+                header = "[%s]:8787" % host if host == "::1" else "%s:8787" % host
+                self.assertTrue(server_module.host_header_ok(header, 8787))
+
+    def test_every_refused_host_is_also_unanswerable(self):
+        for host in ("0.0.0.0", "example.com", "127.0.0.1.evil.com", "192.168.1.10"):
+            with self.subTest(host=host):
+                self.assertFalse(server_module.is_loopback(host))
+                self.assertFalse(server_module.host_header_ok("%s:8787" % host, 8787))
+
 
 if __name__ == "__main__":
     import urllib.error

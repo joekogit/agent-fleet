@@ -4,6 +4,8 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
+from fleet import model
 from fleet.types import RawSession, TranscriptFacts, ToolCall, SubagentDispatch
 from fleet.model import (
     classify, build_card, sort_cards, in_scope, STUCK_AFTER, Collector,
@@ -340,6 +342,97 @@ class CollectorConcurrencyTest(unittest.TestCase):
 def os_pid():
     import os
     return os.getpid()
+
+class PrewarmProcStartsTest(unittest.TestCase):
+    """One `ps` per poll, outside the lock — not one per session inside it."""
+
+    def setUp(self):
+        model.forget_proc_starts()
+
+    def tearDown(self):
+        model.forget_proc_starts()
+
+    def test_one_subprocess_call_covers_every_pid(self):
+        calls = []
+        real_run = model.subprocess.run
+
+        def spy(cmd, **kwargs):
+            calls.append(cmd)
+            return real_run(cmd, **kwargs)
+
+        with mock.patch.object(model.subprocess, "run", spy):
+            model.prewarm_proc_starts([os.getpid(), 1, 1])
+
+        self.assertEqual(len(calls), 1, "expected a single batched ps invocation")
+        # Both distinct pids in one -p argument, not two separate calls.
+        self.assertIn(str(os.getpid()), calls[0][-1])
+        self.assertIn("1", calls[0][-1].split(","))
+
+    def test_prewarmed_pids_need_no_further_subprocess(self):
+        model.prewarm_proc_starts([os.getpid()])
+        with mock.patch.object(model.subprocess, "run") as never:
+            self.assertIsNotNone(model.proc_start_epoch(os.getpid(), time.time()))
+        never.assert_not_called()
+
+    def test_fresh_cache_skips_the_subprocess_entirely(self):
+        model.prewarm_proc_starts([os.getpid()])
+        with mock.patch.object(model.subprocess, "run") as never:
+            model.prewarm_proc_starts([os.getpid()])
+        never.assert_not_called()
+
+    def test_unreported_pid_is_cached_as_unknown_and_fails_open(self):
+        dead = 999_999
+        model.prewarm_proc_starts([dead])
+        self.assertIsNone(model.proc_start_epoch(dead, time.time()))
+
+    def test_snapshot_prewarms_before_taking_the_lock(self):
+        """The whole point: no `ps` may run while the collector lock is held."""
+        collector = model.Collector()
+        held = []
+        original = model.prewarm_proc_starts
+
+        def watching(pids):
+            held.append(collector._lock.acquire(blocking=False))
+            if held[-1]:
+                collector._lock.release()
+            return original(pids)
+
+        with mock.patch.object(model, "prewarm_proc_starts", watching):
+            collector.snapshot()
+
+        self.assertTrue(held and all(held), "prewarm ran while the lock was held")
+
+
+class SubagentTruncationTest(unittest.TestCase):
+    def _card_with(self, done_count):
+        f = facts()
+        f.subagents = [
+            SubagentDispatch(str(i), "Agent", "task %d" % i, NOW - 100, returned_at=NOW - 50)
+            for i in range(done_count)
+        ]
+        return build_card(cli(pid=os_pid()), f, NOW)
+
+    def test_omitted_count_matches_what_the_list_leaves_out(self):
+        card = self._card_with(24)
+        self.assertEqual(card.subagents_done, 24)
+        self.assertEqual(len(card.subagents), model.MAX_DONE_SHOWN)
+        self.assertEqual(card.subagents_omitted, 24 - model.MAX_DONE_SHOWN)
+
+    def test_nothing_omitted_when_under_the_cap(self):
+        card = self._card_with(3)
+        self.assertEqual(len(card.subagents), 3)
+        self.assertEqual(card.subagents_omitted, 0)
+
+    def test_running_dispatches_are_never_omitted(self):
+        f = facts()
+        f.subagents = [
+            SubagentDispatch("r%d" % i, "Agent", "running %d" % i, NOW - 10)
+            for i in range(15)
+        ]
+        card = build_card(cli(pid=os_pid()), f, NOW)
+        self.assertEqual(card.subagents_running, 15)
+        self.assertEqual(len(card.subagents), 15)
+        self.assertEqual(card.subagents_omitted, 0)
 
 
 if __name__ == "__main__":

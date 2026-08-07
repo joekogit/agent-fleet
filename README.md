@@ -47,7 +47,7 @@ that matters.
 ./install.sh
 ```
 
-This installs a `launchd` user agent (`com.joekocovsky.agentfleet`) that
+This installs a `launchd` user agent (`com.agentfleet.dashboard`) that
 starts the dashboard at login and restarts it automatically if it ever
 crashes. It's idempotent — safe to re-run any time you pull new code, to pick
 up changes.

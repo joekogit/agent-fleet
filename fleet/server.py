@@ -1,5 +1,6 @@
 """Loopback-only HTTP server for the fleet dashboard."""
 import errno
+import ipaddress
 import json
 import os
 import sys
@@ -20,7 +21,20 @@ CONTENT_TYPES = {
 }
 
 
-LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+def is_loopback(host):
+    """True only for `localhost` or a genuine loopback IP literal.
+
+    A prefix test like `host.startswith("127.")` accepts `127.0.0.1.evil.com`,
+    which is a DNS name an attacker controls, so the address is parsed rather
+    than pattern-matched. `ipaddress` covers all of 127.0.0.0/8 and ::1.
+    """
+    host = (host or "").strip().strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def host_header_ok(value, port):
@@ -48,7 +62,11 @@ def host_header_ok(value, port):
         name, port_part = value.split(":", 1)
     else:
         name, port_part = value, ""
-    if name.lower() not in LOOPBACK_HOSTS:
+    # Same predicate as the bind guard, so any host we are willing to bind is
+    # a host we are willing to answer for. Previously the bind guard allowed
+    # all of 127.0.0.0/8 while this check was an exact-match list, so
+    # `--host 127.0.0.2` would start and then 403 every request it received.
+    if not is_loopback(name):
         return False
     if port_part and port_part != str(port):
         return False
@@ -113,11 +131,6 @@ def make_handler(collector):
             pass  # quiet; launchd captures real errors via stderr
 
     return Handler
-
-
-def is_loopback(host):
-    host = (host or "").strip().strip("[]").lower()
-    return host in LOOPBACK_HOSTS or host.startswith("127.")
 
 
 def serve(port=8787, host="127.0.0.1"):

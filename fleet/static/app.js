@@ -210,6 +210,14 @@
         }
         list.appendChild(li);
       });
+      // The header above reports the true total, so say what is not listed
+      // rather than letting the count and the list silently disagree.
+      var omitted = card.subagents_omitted || 0;
+      if (omitted > 0) {
+        list.appendChild(
+          el("li", "subagent is-omitted", "+" + omitted + " older not shown")
+        );
+      }
       wrap.appendChild(list);
     }
     return wrap;

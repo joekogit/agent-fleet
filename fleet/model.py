@@ -26,6 +26,8 @@ SYNTHETIC_MODEL = "<synthetic>"
 
 STATUS_ORDER = {"attention": 0, "busy": 1, "idle": 2, "stale": 3}
 
+MAX_DONE_SHOWN = 10       # completed dispatches listed per card; the rest are counted
+
 _proc_start_cache = {}    # pid -> (checked_at, start_epoch|None)
 _proc_start_lock = threading.Lock()
 
@@ -87,6 +89,59 @@ def _proc_elapsed(pid):
     with _proc_start_lock:
         _proc_start_cache[pid] = record
     return record
+
+
+def prewarm_proc_starts(pids):
+    """Resolve every PID's elapsed time in ONE `ps`, before the lock is taken.
+
+    Called per poll from `Collector.snapshot`. Without it, `_proc_elapsed`
+    spawns one `ps` per live CLI session from inside `Collector._lock`, so
+    every HTTP request serializes behind N subprocess spawns. One batched
+    call outside the lock costs a single exec and leaves the locked region
+    doing nothing but cache lookups.
+
+    A PID `ps` does not report is cached as unknown, which fails open in
+    `_pid_was_reused` — same as any other unreadable case.
+    """
+    stamp = time.monotonic()
+    with _proc_start_lock:
+        wanted = [
+            pid for pid in set(pids)
+            if pid and not (
+                _proc_start_cache.get(pid)
+                and stamp - _proc_start_cache[pid][1] < _PROC_START_TTL
+            )
+        ]
+    if not wanted:
+        return                                  # every entry still fresh
+
+    parsed = {}
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "pid=,etime=", "-p", ",".join(str(p) for p in wanted)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        for line in out.stdout.decode("ascii", "replace").splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                continue
+            try:
+                parsed[int(fields[0])] = _parse_etime(fields[1])
+            except ValueError:
+                continue
+    except (OSError, subprocess.SubprocessError):
+        parsed = {}
+
+    measured_at = time.monotonic()
+    with _proc_start_lock:
+        for pid in wanted:
+            _proc_start_cache[pid] = (parsed.get(pid), measured_at)
+
+
+def forget_proc_starts():
+    """Drop the PID start-time cache. For tests that need a clean slate."""
+    with _proc_start_lock:
+        _proc_start_cache.clear()
 
 
 def proc_start_epoch(pid, now):
@@ -219,6 +274,7 @@ def build_card(raw, facts, now):
 
     running = _running_subagents(facts)
     done = [s for s in facts.subagents if s.returned_at is not None]
+    shown_done = list(reversed(done))[:MAX_DONE_SHOWN]
 
     last_tool = None
     if facts.last_tool:
@@ -248,12 +304,13 @@ def build_card(raw, facts, now):
                 "dispatched_at": s.dispatched_at,
             }
             # Outstanding dispatches first, then most recent completions.
-            for s in running + list(reversed(done))[:10]
+            for s in running + shown_done
         ],
         tokens=tokens,
         cost_estimate=estimate_cost(model, tokens),
         started_at=raw.started_at,
         last_activity_at=raw.last_activity_at,
+        subagents_omitted=len(done) - len(shown_done),
     )
 
 
@@ -285,10 +342,21 @@ class Collector:
         self._lock = threading.Lock()
 
     def snapshot(self, now=None):
+        now = now or time.time()
+
+        # Both of these run OUTSIDE the lock. `discover_all` only reads the
+        # filesystem into fresh objects, and `prewarm_proc_starts` only fills
+        # its own separately-locked cache. The collector lock exists to guard
+        # the incremental TranscriptCache; holding it across a directory walk
+        # and N subprocess spawns would serialize every request behind them.
+        sessions = discover_all(self.home, self.app_support)
+        prewarm_proc_starts(
+            [s.pid for s in sessions if s.source == "cli" and s.pid]
+        )
+
         with self._lock:
-            now = now or time.time()
             cards = []
-            for raw in discover_all(self.home, self.app_support):
+            for raw in sessions:
                 try:
                     facts = (
                         self.cache.facts_for(raw.transcript_path)

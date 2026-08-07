@@ -1799,8 +1799,8 @@ Give the skill the payload contract below and the requirements that follow.
   "cards": [{
     "id": "8c178277-...",
     "source": "cli",
-    "name": "agent-action-a0",
-    "cwd": "/Users/joekocovsky/Claude/Code/agent-action",
+    "name": "project-a-a0",
+    "cwd": "/Users/you/Code/agent-fleet",
     "git_branch": "main",
     "model": "claude-opus-5",
     "status": "attention",
@@ -1880,7 +1880,7 @@ Both scripts must be idempotent — safe to run twice.
 # Idempotent: safe to re-run to pick up changes.
 set -euo pipefail
 
-LABEL="com.joekocovsky.agentfleet"
+LABEL="com.agentfleet.dashboard"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="$(command -v python3)"
@@ -1937,7 +1937,7 @@ echo "  3. It gets its own Dock icon and window. ⌘-Tab to it like any app."
 # Remove the Agent Fleet launchd agent. Leaves the repo untouched.
 set -euo pipefail
 
-LABEL="com.joekocovsky.agentfleet"
+LABEL="com.agentfleet.dashboard"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
@@ -1959,7 +1959,7 @@ Expected: the install prints the URL and the Chrome instructions.
 - [ ] **Step 4: Verify it is actually running**
 
 ```bash
-launchctl print "gui/$UID/com.joekocovsky.agentfleet" | grep -E "state|pid"
+launchctl print "gui/$UID/com.agentfleet.dashboard" | grep -E "state|pid"
 curl -s http://127.0.0.1:8787/api/fleet | head -c 200
 ```
 
@@ -1968,7 +1968,7 @@ Expected: state `running` with a pid, and JSON from curl.
 - [ ] **Step 5: Verify it survives a crash**
 
 ```bash
-kill "$(launchctl print "gui/$UID/com.joekocovsky.agentfleet" | awk '/pid = / {print $3}')"
+kill "$(launchctl print "gui/$UID/com.agentfleet.dashboard" | awk '/pid = / {print $3}')"
 sleep 3
 curl -s http://127.0.0.1:8787/api/fleet | head -c 60
 ```

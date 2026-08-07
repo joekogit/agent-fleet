@@ -438,6 +438,13 @@ main {
 }
 
 .subagent.is-running .pip { background: var(--busy); }
+
+/* Reads as a note about the list, not as another dispatch in it. */
+.subagent.is-omitted {
+  padding-left: 12px;
+  opacity: 0.6;
+  font-style: italic;
+}
 .subagent.is-running { color: var(--text); }
 
 .subagent .desc {

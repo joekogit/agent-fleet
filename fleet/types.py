@@ -67,3 +67,6 @@ class AgentCard:
     started_at: Optional[float]
     last_activity_at: Optional[float]
     error: Optional[str] = None
+    # Completed dispatches beyond the display cap. The rollup header reports
+    # the true total, so the list must say what it is not showing.
+    subagents_omitted: int = 0
