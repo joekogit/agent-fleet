@@ -10,7 +10,8 @@
 
 ## Global Constraints
 
-- **Python 3.11+**, **standard library only.** No pip installs, no `requirements.txt`. Tests use `unittest`, not pytest.
+- **Python 3.9+**, **standard library only.** No pip installs, no `requirements.txt`. Tests use `unittest`, not pytest.
+  - Corrected 2026-08-07 during execution. The original plan said 3.11+, but this machine's only `python3` is `/usr/bin/python3` = **3.9.6** (macOS system Python; no Homebrew Python installed), and `install.sh` resolves the interpreter with `command -v python3`. All code must therefore avoid 3.10+ syntax: **no `X | None` union annotations** (use `typing.Optional`), no `match` statements. Tasks 1–6 already comply and pass on 3.9.6.
 - **Read-only.** The program must never write, move, or delete anything under `~/.claude/` or `~/Library/Application Support/Claude/`. Its only writes are its own log file.
 - **Bind `127.0.0.1` only.** Never `0.0.0.0`. The page exposes session titles, working directories and prompt fragments.
 - **All timestamps normalize to epoch seconds (float).** Session JSON uses epoch milliseconds; transcripts use ISO-8601 with `Z`. Convert at the boundary; nothing downstream handles two formats.
@@ -1580,6 +1581,15 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.get("/static/../../../../etc/passwd")
         self.assertIn(ctx.exception.code, (403, 404))
+
+    def test_path_traversal_to_existing_sibling_file_is_rejected(self):
+        # The test above is VACUOUS on its own: '../../../../etc/passwd'
+        # normalizes to a path that does not exist, so it 404s whether or not
+        # the guard fires. This one targets a file that DOES exist just outside
+        # the static root, so it can only pass because the guard rejected it.
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.get("/static/../server.py")
+        self.assertEqual(ctx.exception.code, 403)
 
 
 if __name__ == "__main__":

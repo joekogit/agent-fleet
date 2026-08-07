@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Fleet</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0B0D10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F6F7F9" media="(prefers-color-scheme: light)">
+<meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <rect width="32" height="32" rx="7" fill="#0F1216"/>
+        <circle cx="9" cy="9.5" r="2.6" fill="#FFB020"/>
+        <rect x="14" y="8.2" width="11" height="2.6" rx="1.3" fill="#FFB020" opacity="0.55"/>
+        <circle cx="9" cy="16.5" r="2.6" fill="#3DD68C"/>
+        <rect x="14" y="15.2" width="8" height="2.6" rx="1.3" fill="#3DD68C" opacity="0.45"/>
+        <circle cx="9" cy="23.5" r="2.6" fill="#5A6473"/>
+        <rect x="14" y="22.2" width="5" height="2.6" rx="1.3" fill="#5A6473" opacity="0.45"/>
+      </svg>
+      <h1>Agent Fleet</h1>
+    </div>
+
+    <div class="counts" id="counts" aria-label="Fleet status counts"></div>
+
+    <div class="link">
+      <span class="link-state" id="link-state" role="status" aria-live="polite">connecting…</span>
+      <span class="link-age" id="link-age"></span>
+    </div>
+  </header>
+
+  <main>
+    <div class="board" id="board" aria-label="Active agents"></div>
+    <p class="notice" id="notice">Connecting to the fleet…</p>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

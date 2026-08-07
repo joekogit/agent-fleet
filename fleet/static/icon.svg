@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Agent Fleet">
+  <rect width="32" height="32" rx="7" fill="#0F1216"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="6.5" fill="none" stroke="#2A303A"/>
+  <g>
+    <circle cx="9" cy="9.5" r="2.6" fill="#FFB020"/>
+    <rect x="14" y="8.2" width="11" height="2.6" rx="1.3" fill="#FFB020" opacity="0.55"/>
+  </g>
+  <g>
+    <circle cx="9" cy="16.5" r="2.6" fill="#3DD68C"/>
+    <rect x="14" y="15.2" width="8" height="2.6" rx="1.3" fill="#3DD68C" opacity="0.45"/>
+  </g>
+  <g>
+    <circle cx="9" cy="23.5" r="2.6" fill="#5A6473"/>
+    <rect x="14" y="22.2" width="5" height="2.6" rx="1.3" fill="#5A6473" opacity="0.45"/>
+  </g>
+</svg>
