@@ -1,7 +1,11 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
+
 from fleet.sources import CliAdapter, DesktopAdapter, discover_all
 
 
@@ -127,7 +131,7 @@ class DesktopAdapterTest(unittest.TestCase):
 
 class DiscoverAllTest(unittest.TestCase):
     def test_survives_when_one_adapter_raises(self):
-        """One adapter's failure does not prevent discovering from others."""
+        """One adapter's exception does not prevent discovering from others."""
         home = tempfile.mkdtemp()
         os.makedirs(os.path.join(home, ".claude", "sessions"))
         proj = os.path.join(home, ".claude", "projects", "-test")
@@ -142,15 +146,28 @@ class DiscoverAllTest(unittest.TestCase):
         with open(os.path.join(home, ".claude", "sessions", "123.json"), "w") as fh:
             json.dump(payload, fh)
 
-        # Create a broken desktop adapter by passing a nonexistent path
-        # discover_all will try both adapters
-        sessions = discover_all(home=home, app_support="/nonexistent/desktop")
+        # Patch DesktopAdapter to raise when discover() is called.
+        # Patch the class as seen by fleet.sources, not by this test module.
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            with mock.patch("fleet.sources.DesktopAdapter") as MockDesktop:
+                mock_instance = mock.Mock()
+                mock_instance.discover.side_effect = RuntimeError("simulated desktop adapter failure")
+                MockDesktop.return_value = mock_instance
 
-        # Should still get the CLI session despite desktop adapter failing
-        self.assertGreaterEqual(len(sessions), 1)
+                # discover_all instantiates DesktopAdapter, gets our mock, calls discover(), catches exception
+                sessions = discover_all(home=home, app_support="/tmp")
+
+        # Should still get CLI sessions despite desktop adapter raising
+        self.assertGreater(len(sessions), 0)
         cli_sessions = [s for s in sessions if s.source == "cli"]
         self.assertEqual(len(cli_sessions), 1)
         self.assertEqual(cli_sessions[0].name, "test-cli")
+
+        # Verify the exception was logged to stderr by discover_all's traceback.print_exc()
+        stderr_output = stderr_capture.getvalue()
+        self.assertIn("RuntimeError", stderr_output)
+        self.assertIn("simulated desktop adapter failure", stderr_output)
 
 
 if __name__ == "__main__":
