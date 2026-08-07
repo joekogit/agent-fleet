@@ -25,6 +25,9 @@ class TranscriptFacts:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_creation_tokens: int = 0
+    # Subset of cache_creation_tokens written with the 1-hour TTL.
+    # Priced at 2x base input vs 1.25x for the 5-minute tier.
+    cache_creation_1h_tokens: int = 0
     cache_read_tokens: int = 0
     models_seen: List[str] = field(default_factory=list)
     subagents: List[SubagentDispatch] = field(default_factory=list)

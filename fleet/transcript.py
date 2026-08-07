@@ -78,6 +78,17 @@ def parse_lines(lines, facts):
             facts.cache_creation_tokens += _int(usage.get("cache_creation_input_tokens"))
             facts.cache_read_tokens += _int(usage.get("cache_read_input_tokens"))
 
+            # Cache writes are billed at two different rates (1.25x base input
+            # for a 5-minute TTL, 2x for an hour), and the transcript records
+            # the split. Only the 1-hour portion is tracked; the remainder of
+            # cache_creation_tokens is the 5-minute portion by subtraction, so
+            # the two can never disagree with the total.
+            breakdown = usage.get("cache_creation")
+            if isinstance(breakdown, dict):
+                facts.cache_creation_1h_tokens += _int(
+                    breakdown.get("ephemeral_1h_input_tokens")
+                )
+
         content = message.get("content")
         if not isinstance(content, list):
             continue

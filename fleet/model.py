@@ -268,6 +268,10 @@ def build_card(raw, facts, now):
         "input": facts.input_tokens,
         "output": facts.output_tokens,
         "cache_creation": facts.cache_creation_tokens,
+        # Portion of the above written with the 1-hour TTL, priced at 2x base
+        # input instead of 1.25x. The UI shows the total; only estimate_cost
+        # needs the split.
+        "cache_creation_1h": facts.cache_creation_1h_tokens,
         "cache_read": facts.cache_read_tokens,
     }
     model = display_model(raw, facts)

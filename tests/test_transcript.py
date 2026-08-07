@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from fleet.types import TranscriptFacts
@@ -69,6 +70,49 @@ class TestMalformed(unittest.TestCase):
         f = load("malformed.jsonl")
         self.assertEqual(f.malformed_lines, 1)
         self.assertEqual(f.input_tokens, 3)  # 1 + 2, bad line skipped
+
+
+class TestCacheWriteTiers(unittest.TestCase):
+    """The 1-hour portion of cache creation is billed at a different rate."""
+
+    def _facts(self, usage):
+        line = json.dumps({
+            "type": "assistant",
+            "timestamp": "2026-08-06T17:00:00.000Z",
+            "message": {"model": "m", "usage": usage, "content": []},
+        })
+        return parse_lines([line], TranscriptFacts())
+
+    def test_one_hour_portion_is_captured(self):
+        f = self._facts({
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_creation_input_tokens": 2366,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {"ephemeral_1h_input_tokens": 2366,
+                               "ephemeral_5m_input_tokens": 0},
+        })
+        self.assertEqual(f.cache_creation_tokens, 2366)
+        self.assertEqual(f.cache_creation_1h_tokens, 2366)
+
+    def test_five_minute_writes_leave_the_one_hour_bucket_empty(self):
+        f = self._facts({
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_creation_input_tokens": 500,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {"ephemeral_1h_input_tokens": 0,
+                               "ephemeral_5m_input_tokens": 500},
+        })
+        self.assertEqual(f.cache_creation_tokens, 500)
+        self.assertEqual(f.cache_creation_1h_tokens, 0)
+
+    def test_absent_breakdown_does_not_crash_or_invent_a_tier(self):
+        f = self._facts({
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_creation_input_tokens": 900,
+            "cache_read_input_tokens": 0,
+        })
+        self.assertEqual(f.cache_creation_tokens, 900)
+        self.assertEqual(f.cache_creation_1h_tokens, 0)
 
 
 if __name__ == "__main__":
