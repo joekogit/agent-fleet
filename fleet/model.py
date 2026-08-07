@@ -1,5 +1,6 @@
 """Normalize sessions from any source into one AgentCard, and rank them."""
 import os
+import threading
 import time
 
 from .types import AgentCard, TranscriptFacts
@@ -147,34 +148,40 @@ class Collector:
         self.home = home
         self.app_support = app_support
         self.cache = TranscriptCache()
+        # snapshot() performs multi-step read-modify-write on self.cache's
+        # shared mutable state (per-transcript offset/mtime/size). The server
+        # calls snapshot() from a background warm thread and from a new
+        # thread per HTTP connection, so this must serialize those calls.
+        self._lock = threading.Lock()
 
     def snapshot(self, now=None):
-        now = now or time.time()
-        cards = []
-        for raw in discover_all(self.home, self.app_support):
-            try:
-                facts = (
-                    self.cache.facts_for(raw.transcript_path)
-                    if raw.transcript_path
-                    else None
-                )
-                card = build_card(raw, facts, now)
-            except Exception as exc:               # one bad file must not blank the fleet
-                card = _error_card(raw, exc, now)
-            if in_scope(card, now):
-                cards.append(card)
+        with self._lock:
+            now = now or time.time()
+            cards = []
+            for raw in discover_all(self.home, self.app_support):
+                try:
+                    facts = (
+                        self.cache.facts_for(raw.transcript_path)
+                        if raw.transcript_path
+                        else None
+                    )
+                    card = build_card(raw, facts, now)
+                except Exception as exc:            # one bad file must not blank the fleet
+                    card = _error_card(raw, exc, now)
+                if in_scope(card, now):
+                    cards.append(card)
 
-        cards = sort_cards(cards)
-        counts = {"attention": 0, "busy": 0, "idle": 0, "stale": 0}
-        for card in cards:
-            counts[card.status] = counts.get(card.status, 0) + 1
+            cards = sort_cards(cards)
+            counts = {"attention": 0, "busy": 0, "idle": 0, "stale": 0}
+            for card in cards:
+                counts[card.status] = counts.get(card.status, 0) + 1
 
-        return {
-            "generated_at": now,
-            "counts": counts,
-            "total": len(cards),
-            "cards": [vars(c) for c in cards],
-        }
+            return {
+                "generated_at": now,
+                "counts": counts,
+                "total": len(cards),
+                "cards": [vars(c) for c in cards],
+            }
 
 
 def _error_card(raw, exc, now):

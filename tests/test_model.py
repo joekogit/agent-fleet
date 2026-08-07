@@ -1,6 +1,11 @@
+import json
+import os
+import tempfile
+import threading
+import time
 import unittest
 from fleet.types import RawSession, TranscriptFacts, ToolCall, SubagentDispatch
-from fleet.model import classify, build_card, sort_cards, in_scope, STUCK_AFTER
+from fleet.model import classify, build_card, sort_cards, in_scope, STUCK_AFTER, Collector
 
 NOW = 1_800_000_000.0
 
@@ -121,6 +126,102 @@ class SortAndScopeTest(unittest.TestCase):
     def test_scope_excludes_sessions_older_than_a_day(self):
         self.assertFalse(in_scope(build_card(app(NOW - 90_000), facts(), NOW), NOW))
         self.assertTrue(in_scope(build_card(app(NOW - 3600), facts(), NOW), NOW))
+
+
+class CollectorConcurrencyTest(unittest.TestCase):
+    """Collector.snapshot() must serialize access to the shared TranscriptCache.
+
+    In the real server, a background cache-warm thread and one thread per HTTP
+    connection can all call snapshot() at the same moment. TranscriptCache.
+    facts_for() does a multi-step read-modify-write on shared, mutable
+    per-transcript state (entry.offset, entry.mtime_ns, entry.size,
+    entry.facts). Without a lock around snapshot(), two threads can both read
+    the same stale entry.offset, both parse the same freshly-appended bytes
+    into the same entry.facts, and double-count tokens -- and because
+    entry.facts is mutated in place and cached, that corruption persists into
+    every future poll, not just the racing ones.
+    """
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.home, ".claude", "sessions"))
+        self.proj = os.path.join(self.home, ".claude", "projects", "-tmp-race")
+        os.makedirs(self.proj)
+        self.session_id = "race-sess"
+        self.transcript = os.path.join(self.proj, f"{self.session_id}.jsonl")
+        open(self.transcript, "w").close()
+
+        payload = {
+            "pid": 999_999_999, "sessionId": self.session_id, "cwd": "/tmp/race",
+            "startedAt": time.time() * 1000, "name": "race-a0", "status": "idle",
+            "updatedAt": time.time() * 1000,
+        }
+        with open(os.path.join(self.home, ".claude", "sessions", "999999999.json"), "w") as fh:
+            json.dump(payload, fh)
+
+        # Points at a directory that does not exist, so the desktop adapter
+        # contributes nothing and every card in the snapshot comes from this
+        # one CLI transcript.
+        self.app_support = os.path.join(self.home, "no-such-app-support")
+
+    def _append_lines(self, count):
+        record = {
+            "timestamp": "2026-08-06T00:00:00.000Z",
+            "message": {
+                "model": "claude-opus-5",
+                "usage": {
+                    "input_tokens": 1, "output_tokens": 0,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                },
+                "content": [],
+            },
+        }
+        line = json.dumps(record)
+        with open(self.transcript, "a") as fh:
+            fh.write((line + "\n") * count)
+
+    def _card_tokens(self, snapshot):
+        for card in snapshot["cards"]:
+            if card["id"] == self.session_id:
+                return card["tokens"]["input"]
+        raise AssertionError("race session card not found in snapshot")
+
+    def test_concurrent_snapshots_do_not_double_count_tokens(self):
+        collector = Collector(home=self.home, app_support=self.app_support)
+
+        # Warm the cache single-threaded, so there is an established entry
+        # with a real (non-zero) offset before the race starts.
+        self._append_lines(50)
+        baseline = self._card_tokens(collector.snapshot())
+        self.assertEqual(baseline, 50)
+
+        # New, unread content that every racing thread will compete to
+        # consume. Large enough that the read + parse takes measurable wall
+        # time, widening the window in which the GIL can switch threads
+        # mid-read-modify-write and expose the race.
+        self._append_lines(4000)
+
+        n_threads = 16
+        barrier = threading.Barrier(n_threads)
+
+        def worker():
+            barrier.wait()  # force every thread into snapshot() at once
+            collector.snapshot()
+
+        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+            self.assertFalse(t.is_alive(), "worker thread did not finish in time")
+
+        final = self._card_tokens(collector.snapshot())
+        self.assertEqual(
+            final, 4050,
+            "token count diverged from a single consistent parse of the "
+            "transcript -- the shared TranscriptCache was corrupted by "
+            "concurrent, unsynchronized snapshot() calls",
+        )
 
 
 def os_pid():
