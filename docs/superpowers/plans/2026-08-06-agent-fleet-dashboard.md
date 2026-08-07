@@ -1582,6 +1582,15 @@ class ServerTest(unittest.TestCase):
             self.get("/static/../../../../etc/passwd")
         self.assertIn(ctx.exception.code, (403, 404))
 
+    def test_path_traversal_to_existing_sibling_file_is_rejected(self):
+        # The test above is VACUOUS on its own: '../../../../etc/passwd'
+        # normalizes to a path that does not exist, so it 404s whether or not
+        # the guard fires. This one targets a file that DOES exist just outside
+        # the static root, so it can only pass because the guard rejected it.
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.get("/static/../server.py")
+        self.assertEqual(ctx.exception.code, 403)
+
 
 if __name__ == "__main__":
     import urllib.error
