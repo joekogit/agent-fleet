@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch, MagicMock
 from fleet.transcript import TranscriptCache, parse_lines
 from fleet.types import TranscriptFacts
 
@@ -66,16 +67,21 @@ class IncrementalTest(unittest.TestCase):
     def test_nanosecond_mtime_detects_same_second_append(self):
         """Verify that nanosecond mtime (not float-second) detects writes in the same second.
 
-        This test ensures _Entry stores mtime_ns and that same-second appends are
-        correctly detected. Without nanosecond precision, two writes in the same second
-        could collide in float-second mtime, causing stale cache hits.
-        """
-        import time
-        from fleet.transcript import _Entry
+        This test forces the exact scenario the fix addresses: two writes to the same file
+        that have the same float-second mtime (same-second collision) but different
+        nanosecond mtime values. Without the nanosecond comparison, the cache would
+        incorrectly see the file as unchanged and skip reading the appended data.
 
+        The test mocks os.stat to return identical float mtime and size but different
+        mtime_ns values. This proves that float-second comparison would fail to detect
+        the change, while nanosecond comparison correctly detects it.
+        """
         self.write(LINE_A)
         cache = TranscriptCache()
-        entry_obj = cache.facts_for(self.path)
+
+        # First poll: read the file normally
+        facts_1 = cache.facts_for(self.path)
+        self.assertEqual(facts_1.input_tokens, 10)
 
         # Verify _Entry stores mtime_ns (not mtime)
         cached_entry = cache._entries[self.path]
@@ -83,13 +89,44 @@ class IncrementalTest(unittest.TestCase):
         self.assertFalse(hasattr(cached_entry, "mtime"), "_Entry should not have mtime attribute")
         self.assertIsNotNone(cached_entry.mtime_ns, "mtime_ns should be set after first read")
 
-        # Now append more data in the same second (usually within a few microseconds)
-        self.write(LINE_B, mode="a")
-        facts_after_append = cache.facts_for(self.path)
+        # Capture the real stat info from the first call
+        real_stat = os.stat(self.path)
+        original_size = real_stat.st_size
+        original_mtime_ns = real_stat.st_mtime_ns
+        real_mtime_float = real_stat.st_mtime
 
-        # The appended line should be detected and counted, proving nanosecond comparison works
-        self.assertEqual(facts_after_append.input_tokens, 15,
-                         "Append in same second should be detected with nanosecond mtime")
+        # Now append LINE_B to the file (actual file change)
+        self.write(LINE_B, mode="a")
+
+        # Create a mock stat that simulates a same-second write collision:
+        # - Same float mtime (collision at float precision — same second)
+        # - Same size (we'll mock the read to handle actual appended data)
+        # - Different mtime_ns (different at nanosecond precision — the fix detects this)
+        new_mtime_ns = original_mtime_ns + 500000  # Different nanosecond value (+ 0.5 ms)
+
+        def mock_stat(path):
+            """Return stat with same float mtime and size, but different mtime_ns.
+
+            This simulates two writes in the same second:
+            - At float precision: identical (1234567890.0 == 1234567890.0) → collision
+            - At nanosecond precision: different → the fix correctly detects this
+            """
+            mock_result = MagicMock()
+            mock_result.st_ino = real_stat.st_ino
+            mock_result.st_mtime = real_mtime_float       # SAME at float precision (same second)
+            mock_result.st_mtime_ns = new_mtime_ns        # DIFFERENT at nanosecond precision
+            mock_result.st_size = original_size           # Report original size (stat doesn't reflect new data)
+            return mock_result
+
+        # Patch os.stat for the cache (but file remains actually changed on disk)
+        with patch("os.stat", side_effect=mock_stat):
+            facts_2 = cache.facts_for(self.path)
+
+        # With nanosecond comparison, the cache detects the mtime_ns change and reads the appended data.
+        # The facts object is mutated in-place by parse_lines, so facts_1 and facts_2 reference
+        # the same object, but it should be updated with the appended data.
+        self.assertEqual(facts_2.input_tokens, 15,
+                         "Nanosecond mtime_ns comparison must detect same-second appends")
 
 
 if __name__ == "__main__":
