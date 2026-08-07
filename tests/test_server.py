@@ -1,11 +1,14 @@
+import http.client
 import json
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest.mock import MagicMock, patch
 from fleet.model import Collector
-from fleet.server import make_handler
+from fleet import server as server_module
+from fleet.server import make_handler, serve
 
 
 class ServerTest(unittest.TestCase):
@@ -62,6 +65,89 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.get("/static/../server.py")
         self.assertEqual(ctx.exception.code, 403)
+
+    def request_with_host(self, host, path="/api/fleet"):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request("GET", path, headers={"Host": host})
+            response = conn.getresponse()
+            return response.status, response.read()
+        finally:
+            conn.close()
+
+    def test_foreign_host_header_is_rejected(self):
+        """DNS rebinding defence.
+
+        Loopback binding does not help once an attacker's domain resolves to
+        127.0.0.1: the browser sends the request here and treats the reply as
+        same-origin. The daemon runs at login on a fixed port, so the window
+        never closes, and the payload carries session titles, working
+        directories, git branches and Bash command strings.
+        """
+        status, body = self.request_with_host("evil.example.com")
+        self.assertEqual(status, 403)
+        self.assertNotIn(b"cards", body)
+
+    def test_foreign_host_header_is_rejected_on_static_too(self):
+        status, _ = self.request_with_host("evil.example.com", path="/")
+        self.assertEqual(status, 403)
+
+    def test_loopback_host_headers_are_accepted(self):
+        for host in (
+            f"127.0.0.1:{self.port}",
+            f"localhost:{self.port}",
+            "127.0.0.1",
+            "localhost",
+            f"[::1]:{self.port}",
+        ):
+            with self.subTest(host=host):
+                status, body = self.request_with_host(host)
+                self.assertEqual(status, 200)
+                self.assertIn(b"cards", body)
+
+    def test_loopback_name_on_the_wrong_port_is_rejected(self):
+        # A rebinding attacker controls the port their victim connects to,
+        # so a Host naming a different port is not this server.
+        status, _ = self.request_with_host(f"localhost:{self.port + 1}")
+        self.assertEqual(status, 403)
+
+
+class ServeBindingTest(unittest.TestCase):
+    """The hardest constraint in the project is the bind address.
+
+    The suite above binds 127.0.0.1 itself in setUpClass, so it asserts the
+    test scaffolding, not the production default. These pin serve() itself.
+    """
+
+    def _serve(self, **kwargs):
+        bound = []
+
+        class FakeServer:
+            def __init__(self, address, handler):
+                bound.append(address)
+
+            def serve_forever(self):
+                raise KeyboardInterrupt
+
+            def shutdown(self):
+                pass
+
+        with patch.object(server_module, "ThreadingHTTPServer", FakeServer), \
+                patch.object(server_module, "Collector", MagicMock()):
+            serve(**kwargs)
+        return bound
+
+    def test_default_bind_is_loopback(self):
+        self.assertEqual(self._serve(port=0)[0], ("127.0.0.1", 0))
+
+    def test_wildcard_host_is_refused(self):
+        for host in ("0.0.0.0", "::", "192.168.1.10", "example.com"):
+            with self.subTest(host=host):
+                with self.assertRaises(SystemExit):
+                    self._serve(port=0, host=host)
+
+    def test_explicit_loopback_host_is_allowed(self):
+        self.assertEqual(self._serve(port=0, host="localhost")[0], ("localhost", 0))
 
 
 if __name__ == "__main__":

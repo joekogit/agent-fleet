@@ -19,11 +19,50 @@ CONTENT_TYPES = {
 }
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def host_header_ok(value, port):
+    """Only a loopback Host may reach the payload.
+
+    Binding to 127.0.0.1 does not stop DNS rebinding: once an attacker's
+    domain resolves to 127.0.0.1, the victim's browser reaches this daemon
+    and treats the response as same-origin. The daemon runs at login on a
+    fixed port, so that window never closes. The payload carries session
+    titles, working directories, git branches and Bash command strings, so
+    the Host header must be checked.
+    """
+    if not value:
+        return False                      # HTTP/1.1 requires one
+    value = value.strip()
+    if value.startswith("["):             # [::1] or [::1]:8787
+        closing = value.find("]")
+        if closing == -1:
+            return False
+        name, rest = value[1:closing], value[closing + 1:]
+        port_part = rest[1:] if rest.startswith(":") else ""
+        if rest and not rest.startswith(":"):
+            return False
+    elif value.count(":") == 1:
+        name, port_part = value.split(":", 1)
+    else:
+        name, port_part = value, ""
+    if name.lower() not in LOOPBACK_HOSTS:
+        return False
+    if port_part and port_part != str(port):
+        return False
+    return True
+
+
 def make_handler(collector):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
         def do_GET(self):
+            if not host_header_ok(
+                self.headers.get("Host"), self.server.server_address[1]
+            ):
+                return self._error(403, "forbidden")
             path = self.path.split("?", 1)[0]
             if path == "/api/fleet":
                 return self._json(collector.snapshot())
@@ -75,7 +114,23 @@ def make_handler(collector):
     return Handler
 
 
+def is_loopback(host):
+    host = (host or "").strip().strip("[]").lower()
+    return host in LOOPBACK_HOSTS or host.startswith("127.")
+
+
 def serve(port=8787, host="127.0.0.1"):
+    # Refuse to bind anywhere but loopback. The page exposes working
+    # directories, git branches and prompt fragments; there is no auth, and a
+    # help-text warning is not an enforcement mechanism.
+    if not is_loopback(host):
+        sys.stderr.write(
+            f"Refusing to bind {host}: Agent Fleet is loopback-only.\n"
+            f"It serves session titles, working directories and command "
+            f"strings with no authentication.\n"
+        )
+        raise SystemExit(2)
+
     collector = Collector()
 
     # Warm the transcript cache off-thread so the first request is not slow.

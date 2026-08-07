@@ -7,8 +7,9 @@ def main():
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(
         "--host", default="127.0.0.1",
-        help="Loopback only by default. Do not expose this to a network — "
-             "the page shows working directories and prompt fragments.",
+        help="Loopback only. A non-loopback address is refused, not warned "
+             "about — the page shows working directories and prompt "
+             "fragments and has no authentication.",
     )
     args = parser.parse_args()
     serve(port=args.port, host=args.host)
