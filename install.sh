@@ -6,7 +6,7 @@ set -euo pipefail
 LABEL="com.joekocovsky.agentfleet"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="$(command -v python3)"
+PYTHON="$(command -v python3 || true)"
 PORT="${PORT:-8787}"
 
 if [ -z "$PYTHON" ]; then
