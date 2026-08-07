@@ -6,6 +6,8 @@ one's transcript? Neither reads transcript contents.
 import glob
 import json
 import os
+import sys
+import traceback
 
 from .types import RawSession
 from .timeutil import ms_to_epoch
@@ -137,5 +139,6 @@ def discover_all(home=None, app_support=None):
         try:
             sessions.extend(adapter.discover())
         except Exception:
+            traceback.print_exc(file=sys.stderr)
             continue
     return sessions
