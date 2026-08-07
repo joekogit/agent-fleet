@@ -1,0 +1,3 @@
+{"type":"assistant","timestamp":"2026-08-06T19:00:00.000Z","message":{"model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[]}}
+{"type":"assistant","timestamp":  BROKEN NOT JSON
+{"type":"assistant","timestamp":"2026-08-06T19:00:02.000Z","message":{"model":"claude-opus-5","usage":{"input_tokens":2,"output_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[]}}
