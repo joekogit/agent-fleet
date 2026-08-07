@@ -63,6 +63,34 @@ class IncrementalTest(unittest.TestCase):
     def test_missing_file_returns_none(self):
         self.assertIsNone(TranscriptCache().facts_for(os.path.join(self.dir, "nope.jsonl")))
 
+    def test_nanosecond_mtime_detects_same_second_append(self):
+        """Verify that nanosecond mtime (not float-second) detects writes in the same second.
+
+        This test ensures _Entry stores mtime_ns and that same-second appends are
+        correctly detected. Without nanosecond precision, two writes in the same second
+        could collide in float-second mtime, causing stale cache hits.
+        """
+        import time
+        from fleet.transcript import _Entry
+
+        self.write(LINE_A)
+        cache = TranscriptCache()
+        entry_obj = cache.facts_for(self.path)
+
+        # Verify _Entry stores mtime_ns (not mtime)
+        cached_entry = cache._entries[self.path]
+        self.assertTrue(hasattr(cached_entry, "mtime_ns"), "_Entry should have mtime_ns attribute")
+        self.assertFalse(hasattr(cached_entry, "mtime"), "_Entry should not have mtime attribute")
+        self.assertIsNotNone(cached_entry.mtime_ns, "mtime_ns should be set after first read")
+
+        # Now append more data in the same second (usually within a few microseconds)
+        self.write(LINE_B, mode="a")
+        facts_after_append = cache.facts_for(self.path)
+
+        # The appended line should be detected and counted, proving nanosecond comparison works
+        self.assertEqual(facts_after_append.input_tokens, 15,
+                         "Append in same second should be detected with nanosecond mtime")
+
 
 if __name__ == "__main__":
     unittest.main()

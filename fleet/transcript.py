@@ -115,11 +115,11 @@ def _int(value):
 
 
 class _Entry:
-    __slots__ = ("inode", "mtime", "size", "offset", "facts")
+    __slots__ = ("inode", "mtime_ns", "size", "offset", "facts")
 
     def __init__(self, inode):
         self.inode = inode
-        self.mtime = None
+        self.mtime_ns = None
         self.size = 0
         self.offset = 0
         self.facts = TranscriptFacts()
@@ -153,7 +153,7 @@ class TranscriptCache:
         if rotated:
             entry = _Entry(stat.st_ino)
             self._entries[path] = entry
-        elif stat.st_size == entry.size and stat.st_mtime == entry.mtime:
+        elif stat.st_size == entry.size and stat.st_mtime_ns == entry.mtime_ns:
             return entry.facts                    # untouched — no read at all
 
         try:
@@ -166,13 +166,13 @@ class TranscriptCache:
         consumed = chunk.rfind(b"\n")
         if consumed == -1:
             # No complete line yet. Leave offset alone and wait.
-            entry.mtime = stat.st_mtime
+            entry.mtime_ns = stat.st_mtime_ns
             entry.size = stat.st_size
             return entry.facts
 
         complete = chunk[: consumed + 1]
         entry.offset += len(complete)
-        entry.mtime = stat.st_mtime
+        entry.mtime_ns = stat.st_mtime_ns
         entry.size = stat.st_size
 
         text = complete.decode("utf-8", errors="replace")
