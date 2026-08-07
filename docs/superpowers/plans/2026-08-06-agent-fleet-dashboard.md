@@ -10,7 +10,8 @@
 
 ## Global Constraints
 
-- **Python 3.11+**, **standard library only.** No pip installs, no `requirements.txt`. Tests use `unittest`, not pytest.
+- **Python 3.9+**, **standard library only.** No pip installs, no `requirements.txt`. Tests use `unittest`, not pytest.
+  - Corrected 2026-08-07 during execution. The original plan said 3.11+, but this machine's only `python3` is `/usr/bin/python3` = **3.9.6** (macOS system Python; no Homebrew Python installed), and `install.sh` resolves the interpreter with `command -v python3`. All code must therefore avoid 3.10+ syntax: **no `X | None` union annotations** (use `typing.Optional`), no `match` statements. Tasks 1–6 already comply and pass on 3.9.6.
 - **Read-only.** The program must never write, move, or delete anything under `~/.claude/` or `~/Library/Application Support/Claude/`. Its only writes are its own log file.
 - **Bind `127.0.0.1` only.** Never `0.0.0.0`. The page exposes session titles, working directories and prompt fragments.
 - **All timestamps normalize to epoch seconds (float).** Session JSON uses epoch milliseconds; transcripts use ISO-8601 with `Z`. Convert at the boundary; nothing downstream handles two formats.
