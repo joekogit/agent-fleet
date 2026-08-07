@@ -111,7 +111,7 @@
     var src = el("span", "badge badge-" + (card.source === "cli" ? "cli" : "app"),
       card.source === "cli" ? "cli" : "app");
     src.title = card.source === "cli"
-      ? "Claude Code CLI — live process heartbeat"
+      ? "Claude Code CLI — liveness checked against the live process; can report attention"
       : "Claude desktop app — activity timestamps only; cannot report attention";
     badges.appendChild(src);
     head.appendChild(badges);

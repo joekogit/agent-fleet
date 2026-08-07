@@ -99,11 +99,20 @@ just says "running" until it isn't.
 
 **Desktop app sessions can never show `attention`.** The `attention` status —
 "this session is probably sitting on a permission prompt, waiting on you" —
-is inferred from a heartbeat: the CLI writes activity timestamps as it works,
-and a long silence while marked busy is what triggers `attention`. The
-desktop app exposes no such heartbeat, so Agent Fleet has nothing to infer
-from. A desktop session that's actually stuck on a permission dialog will
-show as `busy` or `idle`, indistinguishable from one that's simply thinking
-or between turns. If you rely on the desktop app and need to know when it's
-waiting on you, you'll need to check it directly — Agent Fleet cannot tell
-you.
+is inferred from liveness plus silence: for a CLI session, Agent Fleet checks
+that the process is still alive and sees that its transcript has stopped
+growing while it's marked busy, and that combination is what triggers
+`attention`. It never expires — a session blocked for six hours is still
+`attention`. The desktop app exposes no heartbeat and no process to check,
+so Agent Fleet has nothing to infer from. A desktop session that's actually
+stuck on a permission dialog will show as `busy` or `idle`, indistinguishable
+from one that's simply thinking or between turns. If you rely on the desktop
+app and need to know when it's waiting on you, you'll need to check it
+directly — Agent Fleet cannot tell you.
+
+**A session waiting on its own sub-agent reports `busy`, not `attention`.**
+Sub-agent turns are never written to the parent's transcript, so a
+dispatching parent looks silent for the whole dispatch — the same silence
+that would otherwise mean "waiting on you." Agent Fleet knows the dispatch
+is outstanding and reports `busy` instead, with a reason like "working — 1
+sub-agent running (5m since its own last write)."
