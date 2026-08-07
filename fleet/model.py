@@ -62,7 +62,7 @@ def classify(raw, facts, now, stuck_after=STUCK_AFTER, stale_after=STALE_AFTER):
                     f"likely waiting on input — quiet {_ago(silence)}",
                 )
             return "busy", "working"
-        return "idle", "waiting for you"
+        return "idle", "finished — ready when you are"
 
     # Desktop app: no PID, no heartbeat. Recency is all we have.
     age = now - (raw.last_activity_at or 0)
