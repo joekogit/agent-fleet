@@ -1,3 +1,5 @@
+import builtins
+import json
 import os
 import tempfile
 import unittest
@@ -6,6 +8,7 @@ from fleet.transcript import TranscriptCache, parse_lines
 from fleet.types import TranscriptFacts
 
 LINE_A = '{"type":"assistant","timestamp":"2026-08-06T17:00:00.000Z","message":{"model":"m","usage":{"input_tokens":10,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"description":"first"}}]}}\n'
+SEP = "\u2028"          # LINE SEPARATOR: legal, unescaped, in real JSON
 LINE_B = '{"type":"assistant","timestamp":"2026-08-06T17:00:10.000Z","message":{"model":"m","usage":{"input_tokens":5,"output_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/a/b.py"}}]}}\n'
 
 
@@ -32,13 +35,91 @@ class IncrementalTest(unittest.TestCase):
         self.assertEqual(incremental.output_tokens, full.output_tokens)
         self.assertEqual(incremental.last_tool.name, full.last_tool.name)
 
+    def _count_opens(self):
+        """Context manager yielding a list of opens of self.path.
+
+        assertIs(first, second) proves nothing here: facts_for returns the
+        same entry.facts object whether or not it short-circuits, and a read
+        from EOF yields an empty chunk that changes no counter. The only
+        honest assertion is that the file was not opened at all.
+        """
+        real_open = builtins.open
+        opened = []
+
+        def counting_open(file, *args, **kwargs):
+            if file == self.path:
+                opened.append(file)
+            return real_open(file, *args, **kwargs)
+
+        return patch("builtins.open", counting_open), opened
+
     def test_unchanged_file_is_not_reread(self):
         self.write(LINE_A)
         cache = TranscriptCache()
         first = cache.facts_for(self.path)
-        second = cache.facts_for(self.path)
-        self.assertIs(first, second)          # same object, no re-parse
+
+        patcher, opened = self._count_opens()
+        with patcher:
+            second = cache.facts_for(self.path)
+        self.assertEqual(opened, [], "unchanged transcript must not be opened")
+        self.assertIs(first, second)
         self.assertEqual(second.input_tokens, 10)
+
+    def test_changed_file_is_reread(self):
+        """Positive control for the counter above.
+
+        Without this, a broken counter would make the no-read assertion pass
+        for the wrong reason.
+        """
+        self.write(LINE_A)
+        cache = TranscriptCache()
+        cache.facts_for(self.path)
+        self.write(LINE_B, mode="a")
+
+        patcher, opened = self._count_opens()
+        with patcher:
+            facts = cache.facts_for(self.path)
+        self.assertEqual(len(opened), 1, "an appended-to transcript must be read")
+        self.assertEqual(facts.input_tokens, 15)
+
+    def test_unicode_line_separator_does_not_split_a_record(self):
+        """U+2028 inside a JSON string must not tear the record in half.
+
+        JSON does not require escaping U+2028/U+2029/U+0085 and JSON.stringify
+        emits U+2028 raw, but str.splitlines() breaks on all three while the
+        full-rescan path (iterating the file) does not. A torn record means
+        undercounted tokens, a lost last_tool, and — if it was a tool_result —
+        a sub-agent stuck on 'running' forever.
+        """
+        record = {
+            "type": "assistant",
+            "timestamp": "2026-08-06T17:00:00.000Z",
+            "message": {
+                "model": "m",
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 1,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                },
+                "content": [{
+                    "type": "tool_use", "id": "t1", "name": "Bash",
+                    "input": {"description": "first" + SEP + "second"},
+                }],
+            },
+        }
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        self.assertIn(SEP, line)          # raw, not the escape sequence
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write(line)
+
+        incremental = TranscriptCache().facts_for(self.path)
+        with open(self.path, encoding="utf-8") as fh:
+            full = parse_lines(fh, TranscriptFacts())
+
+        self.assertEqual(full.malformed_lines, 0)
+        self.assertEqual(incremental.malformed_lines, full.malformed_lines)
+        self.assertEqual(incremental.input_tokens, full.input_tokens)
+        self.assertEqual(incremental.input_tokens, 10)
+        self.assertEqual(incremental.last_tool.name, "Bash")
 
     def test_partial_trailing_line_is_not_consumed(self):
         self.write(LINE_A + '{"type":"assistant","timestamp":"2026')

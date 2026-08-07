@@ -176,5 +176,11 @@ class TranscriptCache:
         entry.size = stat.st_size
 
         text = complete.decode("utf-8", errors="replace")
-        parse_lines(text.splitlines(), entry.facts)
+        # split("\n"), never splitlines(): splitlines() also breaks on U+2028,
+        # U+2029 and U+0085, which JSON does not require escaping and which
+        # JSON.stringify emits raw. Splitting there tears one record into two
+        # malformed halves — lost tokens, lost last_tool, and a sub-agent
+        # stuck on "running" forever if the torn record was its tool_result.
+        # The trailing "" after the final newline is skipped by parse_lines.
+        parse_lines(text.split("\n"), entry.facts)
         return entry.facts
