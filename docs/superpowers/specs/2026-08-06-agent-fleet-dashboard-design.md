@@ -216,6 +216,35 @@ The pure functions are the testable core.
 - **Integration** — start the server, `GET /api/fleet`, assert valid JSON matching the
   `AgentCard` contract.
 
+## Runtime and installation
+
+The dashboard is a local web page served by a background Python process. It is not a
+native application bundle.
+
+**Server lifecycle** — a `launchd` user agent at
+`~/Library/LaunchAgents/com.joekocovsky.agentfleet.plist`:
+
+- `RunAtLoad: true` — starts at login
+- `KeepAlive: true` — restarts if it crashes
+- Binds `127.0.0.1:8787` only. Never `0.0.0.0`; the page exposes session titles, working
+  directories and prompt fragments and must not be reachable from the network.
+- `stdout`/`stderr` to `~/Library/Logs/agent-fleet.log`
+
+Shipped as `install.sh` (writes the plist, `launchctl bootstrap`, prints next steps) and
+`uninstall.sh` (`launchctl bootout`, removes the plist). Both are idempotent.
+
+**Viewing** — Chrome → ⋮ → Cast, Save & Share → *Install page as app*. This gives the
+dashboard its own Dock icon and a chrome-less window that ⌘-Tabs like a native app.
+`install.sh` prints these steps on success.
+
+For this to look right as an installed app, the page must provide:
+- a `<title>` that reads well as a window title ("Agent Fleet")
+- a `<link rel="icon">` favicon, since it becomes the Dock icon
+- a `<meta name="theme-color">` for the window chrome
+
+**Port conflict** — if 8787 is taken, the server exits with a clear message naming the
+port and the `--port` flag rather than silently binding elsewhere.
+
 ## UI
 
 After this spec is approved and the implementation plan exists, the visual layer is
