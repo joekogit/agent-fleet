@@ -112,3 +112,69 @@ def parse_lines(lines, facts):
 
 def _int(value):
     return value if isinstance(value, int) else 0
+
+
+class _Entry:
+    __slots__ = ("inode", "mtime", "size", "offset", "facts")
+
+    def __init__(self, inode):
+        self.inode = inode
+        self.mtime = None
+        self.size = 0
+        self.offset = 0
+        self.facts = TranscriptFacts()
+
+
+class TranscriptCache:
+    """Reads only the bytes appended since the last poll.
+
+    A full re-scan of every transcript on a 3s interval is not viable at this
+    corpus size, so each file keeps a byte offset. A partial trailing line (a
+    write in progress) is never consumed: the offset advances only to the last
+    complete newline.
+    """
+
+    def __init__(self):
+        self._entries = {}
+
+    def facts_for(self, path):
+        try:
+            stat = os.stat(path)
+        except OSError:
+            self._entries.pop(path, None)
+            return None
+
+        entry = self._entries.get(path)
+        rotated = (
+            entry is None
+            or entry.inode != stat.st_ino
+            or stat.st_size < entry.size          # truncated or rewritten
+        )
+        if rotated:
+            entry = _Entry(stat.st_ino)
+            self._entries[path] = entry
+        elif stat.st_size == entry.size and stat.st_mtime == entry.mtime:
+            return entry.facts                    # untouched — no read at all
+
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(entry.offset)
+                chunk = fh.read()
+        except OSError:
+            return entry.facts
+
+        consumed = chunk.rfind(b"\n")
+        if consumed == -1:
+            # No complete line yet. Leave offset alone and wait.
+            entry.mtime = stat.st_mtime
+            entry.size = stat.st_size
+            return entry.facts
+
+        complete = chunk[: consumed + 1]
+        entry.offset += len(complete)
+        entry.mtime = stat.st_mtime
+        entry.size = stat.st_size
+
+        text = complete.decode("utf-8", errors="replace")
+        parse_lines(text.splitlines(), entry.facts)
+        return entry.facts
