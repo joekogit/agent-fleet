@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Agent Fleet</title>
+<pre id="out">loading…</pre>
+<script>
+async function tick() {
+  const res = await fetch('/api/fleet');
+  document.getElementById('out').textContent =
+    JSON.stringify(await res.json(), null, 2);
+}
+tick(); setInterval(tick, 3000);
+</script>
