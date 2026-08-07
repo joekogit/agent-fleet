@@ -5,16 +5,19 @@ import threading
 import time
 import unittest
 from fleet.types import RawSession, TranscriptFacts, ToolCall, SubagentDispatch
-from fleet.model import classify, build_card, sort_cards, in_scope, STUCK_AFTER, Collector
+from fleet.model import (
+    classify, build_card, sort_cards, in_scope, STUCK_AFTER, Collector,
+    proc_start_epoch, SYNTHETIC_MODEL,
+)
 
 NOW = 1_800_000_000.0
 
 
-def cli(status="busy", last_activity=NOW, pid=None):
+def cli(status="busy", last_activity=NOW, pid=None, started_at=NOW):
     return RawSession(
         id="s1", source="cli", name="demo-a0", cwd="/tmp/demo",
         transcript_path="/tmp/x.jsonl", status_hint=status, pid=pid,
-        model=None, effort=None, started_at=NOW - 3600,
+        model=None, effort=None, started_at=started_at,
         last_activity_at=last_activity,
     )
 
@@ -61,12 +64,101 @@ class ClassifyCliTest(unittest.TestCase):
         self.assertEqual(status, "stale")
         self.assertIn("process", reason.lower())
 
-    def test_alive_pid_with_old_heartbeat_is_stale(self):
-        # Guards against PID reuse making a dead session look alive.
-        status, _ = classify(
-            cli(status="busy", pid=os_pid(), last_activity=NOW - 3600), facts(), NOW
+    def test_alive_pid_with_old_activity_timestamp_is_not_stale(self):
+        """`updatedAt` is an activity timestamp, not a heartbeat.
+
+        It stops advancing the moment a session goes quiet, so a session idle
+        for 13 hours is still perfectly alive. Verified on this machine: three
+        live CLI processes, two of them 2.6h and 13.2h since their last
+        `updatedAt`. A live PID must never be rendered `stale`.
+        """
+        status, reason = classify(
+            cli(status="idle", pid=os_pid(), last_activity=NOW - 13 * 3600),
+            facts(NOW - 13 * 3600), NOW,
         )
+        self.assertEqual(status, "idle", reason)
+
+    def test_long_block_on_a_prompt_stays_attention(self):
+        """The case the dashboard exists for must not expire.
+
+        A session blocked on a permission prompt for hours is the single most
+        important thing on the board. Ageing it out into `stale` dims it and
+        sinks it to the bottom exactly when it matters most.
+        """
+        status, reason = classify(
+            cli(status="busy", pid=os_pid(), last_activity=NOW - 6 * 3600),
+            facts(NOW - 6 * 3600), NOW,
+        )
+        self.assertEqual(status, "attention")
+        self.assertIn("likely", reason.lower())
+
+    def test_recycled_pid_does_not_resurrect_a_dead_session(self):
+        """PID reuse guard, without mocks.
+
+        This test's own process is live and holds `os.getpid()`, but it
+        started long after a session claiming to have begun in 2001 — exactly
+        the shape of a stale session file whose PID the OS handed to someone
+        else. `os.kill(pid, 0)` says "alive"; the process start time says
+        "different process".
+        """
+        raw = cli(status="busy", pid=os_pid(), started_at=NOW - 10 * 365 * 86400)
+        status, reason = classify(raw, facts(), NOW)
         self.assertEqual(status, "stale")
+        self.assertIn("pid", reason.lower())
+
+    def test_pid_reuse_check_fails_open_without_a_start_time(self):
+        """No startedAt means no proof of reuse, and liveness must win.
+
+        Hiding a live session is the failure mode this dashboard cannot
+        afford; a session file too old to carry startedAt is still shown.
+        """
+        raw = cli(status="idle", pid=os_pid(), started_at=None)
+        self.assertEqual(classify(raw, facts(), NOW)[0], "idle")
+
+
+class ProcStartTest(unittest.TestCase):
+    def test_reports_a_plausible_start_for_this_process(self):
+        now = time.time()
+        start = proc_start_epoch(os_pid(), now)
+        self.assertIsNotNone(start, "ps must resolve this test process")
+        self.assertLessEqual(start, now + 1)
+        self.assertGreater(start, now - 86400 * 365)
+
+    def test_unknown_pid_yields_none_not_a_crash(self):
+        self.assertIsNone(proc_start_epoch(999_999, time.time()))
+
+
+class SubagentAttentionTest(unittest.TestCase):
+    """A parent blocked on its own sub-agent is working, not waiting.
+
+    Sub-agent turns are never written to the parent's transcript, so the
+    parent looks silent for as long as the dispatch runs. Calling that
+    "likely waiting on input" is wrong and trains the user to ignore the
+    one status that should always mean something.
+    """
+
+    def _facts_with_dispatch(self, returned_at):
+        f = facts(NOW - STUCK_AFTER - 300)
+        f.subagents = [
+            SubagentDispatch("a", "Agent", "research", NOW - 400, returned_at=returned_at)
+        ]
+        return f
+
+    def test_outstanding_dispatch_suppresses_attention(self):
+        status, reason = classify(
+            cli(status="busy", pid=os_pid()), self._facts_with_dispatch(None), NOW
+        )
+        self.assertEqual(status, "busy")
+        self.assertIn("sub-agent", reason)
+        self.assertNotIn("waiting on input", reason)
+
+    def test_returned_dispatch_restores_attention(self):
+        status, reason = classify(
+            cli(status="busy", pid=os_pid()),
+            self._facts_with_dispatch(NOW - 350), NOW,
+        )
+        self.assertEqual(status, "attention")
+        self.assertIn("likely", reason.lower())
 
 
 class ClassifyAppTest(unittest.TestCase):
@@ -100,6 +192,27 @@ class BuildCardTest(unittest.TestCase):
         f = facts()
         f.models_seen = ["claude-opus-5"]
         self.assertEqual(build_card(cli(pid=os_pid()), f, NOW).model, "claude-opus-5")
+
+    def test_synthetic_sentinel_never_wins_the_model_slot(self):
+        """'<synthetic>' is what Claude writes for locally-generated turns.
+
+        models_seen is last-wins, so one interrupt or API error at the end of
+        a session used to blank the real model AND — since the sentinel has no
+        price — the cost estimate with it. Observed live on a session with
+        421M cache-read tokens showing 'est. cost —'.
+        """
+        f = facts()
+        f.models_seen = ["claude-opus-5", SYNTHETIC_MODEL]
+        f.cache_read_tokens = 421_000_000
+        card = build_card(cli(pid=os_pid()), f, NOW)
+        self.assertEqual(card.model, "claude-opus-5")
+        self.assertIsNotNone(card.cost_estimate)
+        self.assertGreater(card.cost_estimate, 0)
+
+    def test_only_synthetic_turns_leave_the_model_unknown(self):
+        f = facts()
+        f.models_seen = [SYNTHETIC_MODEL]
+        self.assertIsNone(build_card(cli(pid=os_pid()), f, NOW).model)
 
     def test_missing_transcript_yields_card_not_crash(self):
         card = build_card(cli(pid=os_pid()), None, NOW)

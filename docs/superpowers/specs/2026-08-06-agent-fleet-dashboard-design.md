@@ -28,7 +28,8 @@ Both sources were confirmed to exist on this machine on 2026-08-06.
   `pid`, `sessionId`, `cwd`, `startedAt`, `procStart`, `version`, `kind`,
   `entrypoint`, `name` (derived, e.g. `retro-game-ea`), `nameSource`,
   `status` (`busy` | `idle`), `updatedAt`, `statusUpdatedAt`.
-  This is the only true liveness heartbeat available.
+  The existence of the file plus a live `pid` is the only true liveness signal
+  available. `updatedAt` is **not** a heartbeat — see "Status ladder" below.
 - `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl` — transcripts. 35 files.
 
 ### Source B — Claude desktop app
@@ -118,16 +119,61 @@ Name resolution, in order: desktop `title` → CLI derived `name` → `basename(
 
 ## Status ladder
 
+### `updatedAt` is not a heartbeat — corrected 2026-08-07
+
+An earlier draft of this document asserted that `~/.claude/sessions/<PID>.json`.`updatedAt`
+is a periodic heartbeat, and the ladder aged a session into `stale` after 10 minutes of
+"heartbeat" silence. **That premise is wrong.** `updatedAt` is an *activity* timestamp: it
+advances when the session does something and then stops. It does not tick on its own.
+
+Measured on this machine, all three processes alive:
+
+```
+    pid alive status  updatedAt age   name
+  14501   YES   busy          0.2h   agent-action-a0
+   7377   YES   idle         13.2h   pictures-63
+  77660   YES   idle          2.6h   retro-game-ea
+```
+
+Two perfectly live sessions were being rendered `stale` — "no heartbeat for 13h" — and
+dimmed to the bottom of the board. Worse, the age check ran *before* the busy/attention
+branch, so a session genuinely blocked on a permission prompt for over 10 minutes lost
+its `attention` highlight and sank — precisely the case this dashboard exists to surface,
+and the one most likely to run long.
+
+**`os.kill(pid, 0)` is the one true liveness signal.** The age of `updatedAt` never
+produces `stale`. Genuinely old sessions are handled by the 24h fleet-scope window.
+
+### The ladder
+
 Cards sort by this order, most urgent first.
 
 1. **`attention`** — registry `status == "busy"` but transcript has not grown in
-   **>60 seconds**. Nearly always a permission prompt or a question awaiting an answer.
-   This is an **inference**. The card must word it as "likely waiting on input" and
-   never assert it as fact.
-2. **`busy`** — busy and actively writing to the transcript.
-3. **`idle`** — process alive, awaiting input.
-4. **`stale`** — PID no longer exists (`os.kill(pid, 0)` raises `ProcessLookupError`),
-   or heartbeat older than 10 minutes.
+   **>60 seconds**, *and no sub-agent dispatch is outstanding*. Nearly always a
+   permission prompt or a question awaiting an answer. This is an **inference**. The card
+   must word it as "likely waiting on input" and never assert it as fact. There is no
+   expiry: a session blocked for six hours is still `attention`.
+2. **`busy`** — busy and actively writing to the transcript, **or** busy, silent, and
+   waiting on a sub-agent of its own. Sub-agent turns are never written to the parent's
+   transcript, so a dispatching parent looks silent for the whole dispatch; that session
+   is working, not waiting on the user, and must not be reported as `attention`.
+3. **`idle`** — process alive, awaiting input. However long its last activity was ago.
+4. **`stale`** — the process is gone. Either `os.kill(pid, 0)` raises
+   `ProcessLookupError`, or the PID is alive but provably belongs to a *different*
+   process (see below).
+
+### PID-reuse guard
+
+A live PID proves some process holds that PID, not that it is the one that wrote the
+session file; the OS recycles PIDs, and a stale session file could otherwise resurrect
+as `busy`. The session's own `startedAt` is compared against the live process's start
+time, read from `ps -o etime=` (elapsed time, unlike `lstart`, is locale-independent —
+and the session file's `procStart` string is UTC while `ps` prints local time). A genuine
+session's process starts 1–5 **seconds before** its `startedAt`; a recycled PID's process
+necessarily started after the original died, and so long after it. A process starting more
+than 120s after `startedAt` is therefore a different process. The check **fails open**: no
+`ps`, or no `startedAt`, means no proof of reuse, and liveness wins. Hiding a live session
+is the failure this dashboard cannot afford.
 
 Desktop sessions have no heartbeat and no PID, so the ladder above cannot be applied
 directly. Their status derives from `lastActivityAt` recency alone, mapped explicitly:

@@ -1,5 +1,6 @@
 """Normalize sessions from any source into one AgentCard, and rank them."""
 import os
+import subprocess
 import threading
 import time
 
@@ -9,11 +10,24 @@ from .sources import discover_all
 from .prices import estimate_cost
 
 STUCK_AFTER = 60.0        # busy + transcript silence past this => likely blocked
-STALE_AFTER = 600.0       # heartbeat older than this => stale
 SCOPE_WINDOW = 86400.0    # show live sessions plus anything active in 24h
 APP_BUSY_WINDOW = 60.0    # desktop has no heartbeat; recent activity == busy
 
+# A live process whose start time is later than the session's own startedAt by
+# more than this cannot be the process that wrote the session file: the PID was
+# recycled. Measured on this machine, a genuine process starts 1-5 SECONDS
+# BEFORE its session file's startedAt, so the real signal is nowhere near the
+# margin.
+PID_REUSE_SLACK = 120.0
+_PROC_START_TTL = 30.0    # re-ask `ps` about a PID at most this often
+
+# Sentinel Claude writes as `message.model` for locally-generated turns.
+SYNTHETIC_MODEL = "<synthetic>"
+
 STATUS_ORDER = {"attention": 0, "busy": 1, "idle": 2, "stale": 3}
+
+_proc_start_cache = {}    # pid -> (checked_at, start_epoch|None)
+_proc_start_lock = threading.Lock()
 
 
 def _pid_alive(pid):
@@ -30,6 +44,85 @@ def _pid_alive(pid):
     return True
 
 
+def _parse_etime(text):
+    """`ps -o etime=` -> elapsed seconds. Format: [[dd-]hh:]mm:ss."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    days = 0
+    if "-" in text:
+        head, text = text.split("-", 1)
+        days = int(head)
+    parts = [int(p) for p in text.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    hours, minutes, seconds = parts[-3:]
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _proc_elapsed(pid):
+    """(elapsed seconds, monotonic clock when measured), or None.
+
+    Cached briefly: polling is every 3s and spawning `ps` per session per
+    poll is waste. Freshness is tracked on the monotonic clock, never on a
+    caller-supplied `now`, so a caller reasoning about a synthetic clock
+    cannot poison the cache for everyone else. A PID recycled inside the TTL
+    is simply noticed one TTL late.
+    """
+    stamp = time.monotonic()
+    with _proc_start_lock:
+        cached = _proc_start_cache.get(pid)
+        if cached and stamp - cached[1] < _PROC_START_TTL:
+            return cached
+    elapsed = None
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "etime=", "-p", str(pid)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        elapsed = _parse_etime(out.stdout.decode("ascii", "replace"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        elapsed = None
+    record = (elapsed, time.monotonic())
+    with _proc_start_lock:
+        _proc_start_cache[pid] = record
+    return record
+
+
+def proc_start_epoch(pid, now):
+    """When the process holding `pid` started, or None if we cannot tell.
+
+    `ps -o etime=` is read rather than `lstart=` because elapsed time is
+    locale-independent; `lstart` is rendered in the caller's locale and in
+    local time, while the session file's own `procStart` string is UTC.
+    """
+    elapsed, measured_at = _proc_elapsed(pid)
+    if elapsed is None:
+        return None
+    return now - (elapsed + max(0.0, time.monotonic() - measured_at))
+
+
+def _pid_was_reused(raw, now):
+    """True only when the live PID provably belongs to a DIFFERENT process.
+
+    `os.kill(pid, 0)` proves *some* process holds the PID, not that it is the
+    one that wrote this session file. The OS recycles PIDs, so a long-dead
+    session could otherwise be resurrected as `busy`. A recycled PID's process
+    necessarily started after the old one died, and therefore well after the
+    session's own startedAt.
+
+    Fails open: if `ps` is unavailable or the session has no startedAt we
+    cannot prove reuse, and liveness wins. Wrongly hiding a live session is
+    the failure this dashboard exists to prevent.
+    """
+    if raw.started_at is None:
+        return False
+    start = proc_start_epoch(raw.pid, now)
+    if start is None:
+        return False
+    return start > raw.started_at + PID_REUSE_SLACK
+
+
 def _ago(seconds):
     seconds = int(max(0, seconds))
     if seconds < 60:
@@ -41,22 +134,39 @@ def _ago(seconds):
     return f"{seconds // 86400}d"
 
 
-def classify(raw, facts, now, stuck_after=STUCK_AFTER, stale_after=STALE_AFTER):
+def classify(raw, facts, now, stuck_after=STUCK_AFTER):
     """Return (status, human reason).
 
     The 'attention' state is INFERRED, never observed. Its reason string must
     stay hedged — the dashboard cannot actually see a permission prompt.
+
+    A live PID is the ONLY liveness signal for a CLI session. `updatedAt` is
+    an activity timestamp, not a heartbeat: it stops advancing the moment a
+    session goes quiet, so a session idle for 13 hours is still perfectly
+    alive. Age of `updatedAt` therefore never produces `stale` — the 24h
+    `in_scope` window handles genuinely old sessions.
     """
     if raw.source == "cli":
         if not _pid_alive(raw.pid):
             return "stale", "process is gone"
-        heartbeat_age = now - (raw.last_activity_at or 0)
-        if heartbeat_age > stale_after:
-            return "stale", f"no heartbeat for {_ago(heartbeat_age)}"
+        if _pid_was_reused(raw, now):
+            return "stale", "process is gone — PID now belongs to another process"
         if raw.status_hint == "busy":
             last_write = facts.last_line_at if facts else None
             silence = now - (last_write or raw.last_activity_at or now)
             if silence > stuck_after:
+                outstanding = _running_subagents(facts)
+                if outstanding:
+                    # A parent goes silent while a sub-agent runs: sub-agent
+                    # turns are never written to the parent's transcript. It
+                    # is working, not waiting on the user.
+                    count = len(outstanding)
+                    plural = "" if count == 1 else "s"
+                    return (
+                        "busy",
+                        f"working — {count} sub-agent{plural} running "
+                        f"({_ago(silence)} since its own last write)",
+                    )
                 return (
                     "attention",
                     f"likely waiting on input — quiet {_ago(silence)}",
@@ -75,6 +185,26 @@ def classify(raw, facts, now, stuck_after=STUCK_AFTER, stale_after=STALE_AFTER):
     return "stale", f"last active {_ago(age)} ago"
 
 
+def _running_subagents(facts):
+    if not facts:
+        return []
+    return [s for s in facts.subagents if s.returned_at is None]
+
+
+def display_model(raw, facts):
+    """The last REAL model seen.
+
+    '<synthetic>' is the sentinel Claude writes for locally-generated
+    assistant turns (interrupts, API errors). It is not a model: showing it
+    hides the true model and, because it has no price, suppresses the cost
+    estimate for the whole session.
+    """
+    if raw.model:
+        return raw.model
+    real = [m for m in facts.models_seen if m != SYNTHETIC_MODEL]
+    return real[-1] if real else None
+
+
 def build_card(raw, facts, now):
     facts = facts or TranscriptFacts()
     status, reason = classify(raw, facts, now)
@@ -85,9 +215,9 @@ def build_card(raw, facts, now):
         "cache_creation": facts.cache_creation_tokens,
         "cache_read": facts.cache_read_tokens,
     }
-    model = raw.model or (facts.models_seen[-1] if facts.models_seen else None)
+    model = display_model(raw, facts)
 
-    running = [s for s in facts.subagents if s.returned_at is None]
+    running = _running_subagents(facts)
     done = [s for s in facts.subagents if s.returned_at is not None]
 
     last_tool = None
