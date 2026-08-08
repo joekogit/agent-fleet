@@ -109,12 +109,38 @@ class ShippedRatesTest(unittest.TestCase):
         self.assertEqual(PRICES["claude-opus-5"].output, 25.0)
         self.assertEqual(PRICES["claude-opus-4-1"].input, 15.0)
 
-    def test_cache_tiers_are_the_published_multiples_of_base_input(self):
+    def test_anthropic_cache_tiers_are_the_published_multiples(self):
+        """Anthropic's cache prices are fixed multiples of base input.
+
+        Scoped to claude-* deliberately: OpenAI publishes no cache-write price
+        at all, so applying these ratios to a GPT entry asserts nothing real.
+        """
         for name, entry in PRICES.items():
+            if not name.startswith("claude-"):
+                continue
             with self.subTest(model=name):
                 self.assertAlmostEqual(entry.cache_write_5m, entry.input * 1.25)
                 self.assertAlmostEqual(entry.cache_write_1h, entry.input * 2.0)
                 self.assertAlmostEqual(entry.cache_read, entry.input * 0.1)
+
+    def test_openai_entries_bill_nothing_for_cache_writes(self):
+        """OpenAI publishes input / cached-input / output only.
+
+        Charging a cache-write rate they do not levy would silently inflate
+        every Codex card.
+        """
+        for name, entry in PRICES.items():
+            if not name.startswith("gpt-"):
+                continue
+            with self.subTest(model=name):
+                self.assertEqual(entry.cache_write_5m, 0.0)
+                self.assertEqual(entry.cache_write_1h, 0.0)
+                self.assertLessEqual(entry.cache_read, entry.input)
+
+    def test_codex_models_seen_on_this_machine_are_priced(self):
+        for model in ("gpt-5.6-sol", "gpt-5.5", "gpt-5.6-terra"):
+            with self.subTest(model=model):
+                self.assertIn(model, PRICES)
 
     def test_models_seen_on_this_machine_are_all_priced(self):
         for model in ("claude-opus-5", "claude-fable-5", "claude-sonnet-5",

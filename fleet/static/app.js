@@ -22,8 +22,75 @@
     connected: false,
     everLoaded: false,
     renderedKey: null,  // avoids repainting identical data (keeps focus stable)
-    expanded: Object.create(null) // card id -> sub-agent list open
+    expanded: Object.create(null), // card id -> sub-agent list open
+    attention: null,    // ids currently in attention; null until first payload
+    audioCtx: null
   };
+
+  // ---------- attention chime ----------
+  //
+  // Fires only on the TRANSITION into attention, not while it persists —
+  // otherwise a session blocked for an hour would chime every 3 seconds and
+  // you would mute it permanently, which defeats the whole point.
+
+  var SOUND_KEY = "agentfleet.sound";
+  var soundOn = localStorage.getItem(SOUND_KEY) !== "off";
+
+  function chime() {
+    if (!soundOn) return;
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      if (!state.audioCtx) state.audioCtx = new Ctx();
+      var ctx = state.audioCtx;
+      // Browsers suspend audio until a user gesture; a suspended context
+      // means the page has not been interacted with yet, so stay silent
+      // rather than queueing a burst of chimes for later.
+      if (ctx.state === "suspended") return;
+
+      var now = ctx.currentTime;
+      var master = ctx.createGain();
+      master.gain.value = 0.09;            // subtle by design
+      master.connect(ctx.destination);
+
+      // Two soft sine partials, a rising fifth — reads as a notification
+      // rather than an alarm.
+      [[880, 0], [1318.5, 0.11]].forEach(function (pair) {
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = pair[0];
+        var start = now + pair[1];
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(1, start + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.38);
+        osc.connect(gain);
+        gain.connect(master);
+        osc.start(start);
+        osc.stop(start + 0.42);
+      });
+    } catch (err) {
+      /* audio is a nicety; never let it break the board */
+    }
+  }
+
+  function checkAttentionTransitions(cards) {
+    var current = Object.create(null);
+    (cards || []).forEach(function (card) {
+      if (card.status === "attention") current[card.id] = true;
+    });
+
+    // Seed silently on the first payload, so opening the page does not chime
+    // for sessions that were already waiting before you looked.
+    if (state.attention === null) {
+      state.attention = current;
+      return;
+    }
+    for (var id in current) {
+      if (!state.attention[id]) { chime(); break; }
+    }
+    state.attention = current;
+  }
 
   // ---------- helpers ----------
 
@@ -343,6 +410,8 @@
         state.receivedAt = performance.now();
         state.connected = true;
         state.everLoaded = true;
+        // Before render(), which early-returns when the data is unchanged.
+        checkAttentionTransitions(payload.cards);
         render();
         renderLink();
       })
@@ -368,6 +437,42 @@
   }
 
   poll();
+  // ---------- sound toggle ----------
+
+  var soundBtn = document.getElementById("sound");
+
+  function renderSoundBtn() {
+    var blocked = state.audioCtx && state.audioCtx.state === "suspended";
+    soundBtn.setAttribute("aria-pressed", soundOn ? "true" : "false");
+    soundBtn.classList.toggle("is-off", !soundOn);
+    soundBtn.textContent = soundOn ? "♪" : "♪̸";
+    soundBtn.title = !soundOn
+      ? "Chime on a session entering attention: off"
+      : blocked
+        ? "Chime armed — click anywhere once to let the browser allow audio"
+        : "Chime on a session entering attention: on";
+  }
+
+  soundBtn.addEventListener("click", function () {
+    soundOn = !soundOn;
+    localStorage.setItem(SOUND_KEY, soundOn ? "on" : "off");
+    if (soundOn) chime();          // confirm audibly that it works
+    renderSoundBtn();
+  });
+
+  // Browsers refuse to start audio without a gesture. Any click counts, so
+  // wake the context on the first one rather than demanding a special ritual.
+  function wakeAudio() {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!state.audioCtx) state.audioCtx = new Ctx();
+    if (state.audioCtx.state === "suspended") state.audioCtx.resume();
+    renderSoundBtn();
+  }
+  document.addEventListener("click", wakeAudio, { once: false, passive: true });
+  document.addEventListener("keydown", wakeAudio, { passive: true });
+
+  renderSoundBtn();
   setInterval(poll, POLL_MS);
   setInterval(tick, TICK_MS);
 })();

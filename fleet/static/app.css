@@ -347,6 +347,33 @@ main {
 
 .meta .path { color: var(--dim); }
 
+/* The model is the one piece of metadata worth spotting at a glance, so it
+   takes the card's own status colour rather than the muted meta grey. */
+.meta .model {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.sound {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  margin-right: 8px;
+  transition: color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.sound:hover { color: var(--text); border-color: var(--dim); }
+.sound[aria-pressed="true"] { color: var(--busy); border-color: var(--busy); }
+.sound.is-off { opacity: 0.55; }
+.sound:focus-visible { outline: 2px solid var(--accent, var(--busy)); outline-offset: 2px; }
+
 .activity,
 .rollup-line {
   font-family: var(--mono);
