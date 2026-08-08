@@ -6,6 +6,7 @@ one's transcript? Neither reads transcript contents.
 import glob
 import json
 import os
+import time
 import sys
 import traceback
 
@@ -16,6 +17,10 @@ DEFAULT_HOME = os.path.expanduser("~")
 DEFAULT_APP_SUPPORT = os.path.expanduser(
     "~/Library/Application Support/Claude"
 )
+# Exited CLI sessions stay on the board this long, matching the spec's 24h
+# fleet scope. Beyond it they are not even constructed.
+ORPHAN_WINDOW = 86400.0
+
 # The desktop app keeps sessions under two sibling trees.
 DESKTOP_TREES = ("claude-code-sessions", "local-agent-mode-sessions")
 
@@ -42,7 +47,16 @@ def _newest(paths):
 
 
 class CliAdapter:
-    """~/.claude/sessions/<PID>.json plus ~/.claude/projects/**/<sessionId>.jsonl"""
+    """~/.claude/sessions/<PID>.json plus ~/.claude/projects/**/<sessionId>.jsonl
+
+    Two discovery passes, because the registry only describes LIVE processes.
+    `~/.claude/sessions/<PID>.json` is deleted when a session exits, but its
+    transcript remains — so a registry-only scan can never satisfy the spec's
+    "alive now, plus anything active in the last 24 hours". A session that ran
+    an hour ago and quit was not being aged into `stale`; it was never found.
+    The second pass sweeps recent transcripts and emits the ones the registry
+    does not already account for.
+    """
 
     source = "cli"
 
@@ -50,6 +64,11 @@ class CliAdapter:
         self.home = home or DEFAULT_HOME
 
     def discover(self):
+        live = self._from_registry()
+        seen = set(s.id for s in live)
+        return live + self._orphan_transcripts(seen)
+
+    def _from_registry(self):
         sessions_dir = os.path.join(self.home, ".claude", "sessions")
         projects_dir = os.path.join(self.home, ".claude", "projects")
         out = []
@@ -78,6 +97,84 @@ class CliAdapter:
                 )
             )
         return out
+
+    def _orphan_transcripts(self, seen):
+        """Recent transcripts with no live registry entry — i.e. exited sessions.
+
+        Bounded to ORPHAN_WINDOW so a machine with months of history does not
+        build hundreds of cards the scope filter would only discard again.
+        `pid=None` is deliberate: the status ladder reads that as "cannot prove
+        liveness" and renders `stale`, which is exactly what these are.
+        """
+        projects_dir = os.path.join(self.home, ".claude", "projects")
+        cutoff = time.time() - ORPHAN_WINDOW
+        out = []
+        for path in glob.glob(os.path.join(projects_dir, "*", "*.jsonl")):
+            session_id = os.path.basename(path)[: -len(".jsonl")]
+            if session_id in seen:
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                continue
+            cwd = _transcript_cwd(path)
+            out.append(
+                RawSession(
+                    id=session_id,
+                    source=self.source,
+                    name=_orphan_name(cwd, session_id),
+                    cwd=cwd,
+                    transcript_path=path,
+                    status_hint=None,       # no registry entry to hint with
+                    pid=None,               # exited: liveness cannot be proven
+                    model=None,             # the transcript supplies it
+                    effort=None,
+                    started_at=None,
+                    last_activity_at=mtime,
+                )
+            )
+        return out
+
+
+def _orphan_name(cwd, session_id):
+    """`code-a1f2` — directory plus a stable suffix from the session id.
+
+    Several sessions commonly run in the same directory (often `$HOME`), and
+    without a suffix they render as a row of identical cards. This is NOT the
+    name Claude derived for the live session — that lived in the registry file
+    which is deleted on exit — so it only has to be stable and distinguishable.
+    """
+    base = os.path.basename(cwd)
+    if not base:
+        return session_id[:8]
+    return "%s-%s" % (base, session_id[:4])
+
+
+def _transcript_cwd(path, max_lines=30):
+    """Recover the working directory from the head of a transcript.
+
+    The directory name is a slugged path (`-Users-me-Code-thing`) that cannot
+    be reversed unambiguously — a dash in a real directory name is
+    indistinguishable from a separator — so the value recorded inside the file
+    is read instead.
+    """
+    try:
+        with open(path, "r", errors="replace") as fh:
+            for _ in range(max_lines):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(record, dict) and record.get("cwd"):
+                    return record["cwd"]
+    except OSError:
+        pass
+    return ""
 
 
 class DesktopAdapter:

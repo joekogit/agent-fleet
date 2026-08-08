@@ -3,10 +3,11 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from unittest import mock
 
-from fleet.sources import CliAdapter, DesktopAdapter, discover_all
+from fleet.sources import CliAdapter, DesktopAdapter, ORPHAN_WINDOW, discover_all
 
 
 class CliAdapterTest(unittest.TestCase):
@@ -55,6 +56,90 @@ class CliAdapterTest(unittest.TestCase):
 
     def test_missing_root_yields_nothing(self):
         self.assertEqual(CliAdapter("/nonexistent/path").discover(), [])
+
+
+class ExitedCliSessionTest(unittest.TestCase):
+    """A session that exited must still appear for 24h.
+
+    `~/.claude/sessions/<PID>.json` is deleted on exit, so a registry-only
+    scan loses the session entirely rather than ageing it into `stale`. The
+    spec promises "alive now, plus anything active in the last 24 hours",
+    which registry-only discovery can never deliver.
+    """
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.home, ".claude", "sessions"))
+        self.proj = os.path.join(self.home, ".claude", "projects", "-tmp-demo")
+        os.makedirs(self.proj)
+
+    def _transcript(self, session_id, cwd="/tmp/demo", age_seconds=0):
+        path = os.path.join(self.proj, session_id + ".jsonl")
+        with open(path, "w") as fh:
+            fh.write(json.dumps({
+                "type": "assistant", "cwd": cwd,
+                "timestamp": "2026-08-08T12:00:00.000Z",
+                "message": {"model": "claude-opus-5", "content": []},
+            }) + "\n")
+        if age_seconds:
+            old = time.time() - age_seconds
+            os.utime(path, (old, old))
+        return path
+
+    def _registry(self, pid, session_id):
+        path = os.path.join(self.home, ".claude", "sessions", f"{pid}.json")
+        with open(path, "w") as fh:
+            json.dump({"pid": pid, "sessionId": session_id, "cwd": "/tmp/demo",
+                       "name": "demo-a0", "status": "idle",
+                       "startedAt": 1786038157970, "updatedAt": 1786038213585}, fh)
+
+    def test_exited_session_is_still_discovered(self):
+        self._transcript("gone-1")
+        sessions = CliAdapter(self.home).discover()
+        self.assertEqual([s.id for s in sessions], ["gone-1"])
+        s = sessions[0]
+        self.assertIsNone(s.pid, "no pid means the ladder renders it stale")
+        self.assertIsNone(s.status_hint)
+        self.assertTrue(s.transcript_path.endswith("gone-1.jsonl"))
+
+    def test_cwd_is_read_from_the_transcript_not_the_slug(self):
+        """The directory name is a lossy slug; the real cwd is inside the file."""
+        self._transcript("gone-2", cwd="/Users/me/Code/my-hyphen-project")
+        s = CliAdapter(self.home).discover()[0]
+        self.assertEqual(s.cwd, "/Users/me/Code/my-hyphen-project")
+        self.assertTrue(s.name.startswith("my-hyphen-project-"), s.name)
+
+    def test_live_session_is_not_duplicated_by_the_orphan_sweep(self):
+        self._transcript("live-1")
+        self._registry(4242, "live-1")
+        sessions = CliAdapter(self.home).discover()
+        self.assertEqual(len(sessions), 1, "registry entry must win, not double up")
+        self.assertEqual(sessions[0].pid, 4242)
+        self.assertEqual(sessions[0].name, "demo-a0")
+
+    def test_transcripts_older_than_the_window_are_skipped(self):
+        self._transcript("ancient", age_seconds=ORPHAN_WINDOW + 3600)
+        self._transcript("recent", age_seconds=60)
+        ids = [s.id for s in CliAdapter(self.home).discover()]
+        self.assertEqual(ids, ["recent"])
+
+    def test_unreadable_transcript_still_yields_a_card(self):
+        """A transcript with no cwd must degrade, not vanish."""
+        path = os.path.join(self.proj, "headless.jsonl")
+        with open(path, "w") as fh:
+            fh.write("{not json\n")
+        s = CliAdapter(self.home).discover()[0]
+        self.assertEqual(s.id, "headless")
+        self.assertEqual(s.cwd, "")
+        self.assertEqual(s.name, "headless"[:8])
+
+    def test_sessions_sharing_a_directory_get_distinct_names(self):
+        """Several sessions in $HOME must not render as identical cards."""
+        self._transcript("aaaa-1111", cwd="/Users/me")
+        self._transcript("bbbb-2222", cwd="/Users/me")
+        names = sorted(s.name for s in CliAdapter(self.home).discover())
+        self.assertEqual(len(set(names)), 2, names)
+        self.assertTrue(all(n.startswith("me-") for n in names), names)
 
 
 class DesktopAdapterTest(unittest.TestCase):
