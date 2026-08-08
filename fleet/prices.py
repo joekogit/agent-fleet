@@ -65,32 +65,6 @@ PRICES = {
 }
 
 
-def _openai(base, cached, output):
-    """OpenAI rates: cached input is a discount, and cache writes are not billed.
-
-    Anthropic charges to create a cache entry; OpenAI does not publish a
-    cache-write price, so those tokens cost nothing here. `build_card`
-    normalises OpenAI's usage into the same vocabulary first — their
-    `input_tokens` *includes* the cached portion, so the cached subset is
-    subtracted out before it reaches this table.
-    """
-    return ModelPrice(
-        input=base,
-        output=output,
-        cache_write_5m=0.0,
-        cache_write_1h=0.0,
-        cache_read=cached,
-    )
-
-
-# From https://developers.openai.com/api/docs/pricing on 2026-08-08.
-PRICES.update({
-    "gpt-5.6-sol": _openai(5.0, 0.50, 30.0),
-    "gpt-5.6-terra": _openai(2.0, 0.20, 12.0),
-    "gpt-5.6-luna": _openai(0.20, 0.02, 1.20),
-    "gpt-5.5": _openai(5.0, 0.50, 30.0),
-    "gpt-5.5-pro": _openai(30.0, 30.0, 180.0),   # no cached-input tier published
-})
 
 _PER_MILLION = 1_000_000.0
 _DATE_SUFFIX = re.compile(r"-\d{8}$")
