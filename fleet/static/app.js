@@ -74,22 +74,50 @@
     }
   }
 
+  // A system notification, unlike the chime, still reaches you when this
+  // window is minimised or covered — which is exactly when a browser throttles
+  // the page and the chime becomes unreliable.
+  function notify(card) {
+    if (!soundOn) return;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "granted") return;
+    try {
+      new Notification("Agent Fleet — " + card.name, {
+        body: card.status_reason || "likely waiting on input",
+        icon: "/static/icon-192.png",
+        tag: "agentfleet-" + card.id,   // replaces rather than stacking
+        silent: false
+      });
+    } catch (err) {
+      /* notifications are a nicety; never let one break the board */
+    }
+  }
+
   function checkAttentionTransitions(cards) {
     var current = Object.create(null);
+    var byId = Object.create(null);
     (cards || []).forEach(function (card) {
-      if (card.status === "attention") current[card.id] = true;
+      if (card.status === "attention") {
+        current[card.id] = true;
+        byId[card.id] = card;
+      }
     });
 
-    // Seed silently on the first payload, so opening the page does not chime
+    // Seed silently on the first payload, so opening the page does not alert
     // for sessions that were already waiting before you looked.
     if (state.attention === null) {
       state.attention = current;
       return;
     }
+    var entered = [];
     for (var id in current) {
-      if (!state.attention[id]) { chime(); break; }
+      if (!state.attention[id]) entered.push(byId[id]);
     }
     state.attention = current;
+    if (!entered.length) return;
+
+    chime();                                  // one tone, however many entered
+    entered.forEach(notify);                  // but one notification each
   }
 
   // ---------- helpers ----------
@@ -441,22 +469,59 @@
 
   var soundBtn = document.getElementById("sound");
 
+  function audioBlocked() {
+    // No context yet means nothing has woken audio, which is itself blocked.
+    return !state.audioCtx || state.audioCtx.state === "suspended";
+  }
+
+  function notifyState() {
+    if (typeof Notification === "undefined") return "unsupported";
+    return Notification.permission;          // default | granted | denied
+  }
+
   function renderSoundBtn() {
-    var blocked = state.audioCtx && state.audioCtx.state === "suspended";
+    var blocked = soundOn && audioBlocked();
+    var notif = notifyState();
     soundBtn.setAttribute("aria-pressed", soundOn ? "true" : "false");
     soundBtn.classList.toggle("is-off", !soundOn);
-    soundBtn.textContent = soundOn ? "♪" : "♪̸";
-    soundBtn.title = !soundOn
-      ? "Chime on a session entering attention: off"
-      : blocked
-        ? "Chime armed — click anywhere once to let the browser allow audio"
-        : "Chime on a session entering attention: on";
+    // Armed-but-blocked gets its own visible state: a silent dashboard must
+    // never look like a working one.
+    soundBtn.classList.toggle("is-armed", blocked);
+    soundBtn.textContent = !soundOn ? "♪̸" : blocked ? "♪!" : "♪";
+
+    if (!soundOn) {
+      soundBtn.title = "Alerts off. Click to enable a chime and a system "
+        + "notification when a session starts waiting on you.";
+    } else if (blocked) {
+      soundBtn.title = "Alerts armed, but this browser has not allowed audio "
+        + "yet — click anywhere on the page once to enable it.";
+    } else if (notif === "granted") {
+      soundBtn.title = "Alerts on: chime + system notification when a session "
+        + "starts waiting on you.";
+    } else if (notif === "denied") {
+      soundBtn.title = "Chime on. System notifications are blocked for this "
+        + "site, so alerts may be missed while this window is minimised.";
+    } else {
+      soundBtn.title = "Chime on. Click again to also allow system "
+        + "notifications, which still reach you when this window is hidden.";
+    }
   }
 
   soundBtn.addEventListener("click", function () {
+    var wasOn = soundOn;
     soundOn = !soundOn;
     localStorage.setItem(SOUND_KEY, soundOn ? "on" : "off");
-    if (soundOn) chime();          // confirm audibly that it works
+
+    // A click is a user gesture, which is the only moment a browser will
+    // accept a permission request. Ask whenever alerts are on and we have not
+    // been told yes or no yet — including the second click, so turning it on
+    // and leaving it on still eventually asks.
+    if (soundOn && notifyState() === "default") {
+      try {
+        Notification.requestPermission().then(renderSoundBtn);
+      } catch (err) { /* older callback-style API, or blocked */ }
+    }
+    if (soundOn && !wasOn) chime();     // confirm audibly that it works
     renderSoundBtn();
   });
 

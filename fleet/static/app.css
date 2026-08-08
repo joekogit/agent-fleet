@@ -372,6 +372,25 @@ main {
 .sound:hover { color: var(--text); border-color: var(--dim); }
 .sound[aria-pressed="true"] { color: var(--busy); border-color: var(--busy); }
 .sound.is-off { opacity: 0.55; }
+
+/* Alerts are on but the browser has not allowed audio yet. This must be
+   visible, not just a tooltip — a dashboard that cannot chime should never
+   look like one that can. */
+.sound.is-armed {
+  color: var(--attention);
+  border-color: var(--attention);
+  background: var(--attention-soft);
+  animation: sound-armed 2.4s ease-in-out infinite;
+}
+
+@keyframes sound-armed {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sound.is-armed { animation: none; }
+}
 .sound:focus-visible { outline: 2px solid var(--accent, var(--busy)); outline-offset: 2px; }
 
 .activity,
