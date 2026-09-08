@@ -15,6 +15,38 @@ reload the page.
 It shows any session active in the last 24 hours, ranked with the sessions
 most likely to need you at the top.
 
+## Requirements
+
+- **macOS.** See [Why macOS only](#why-macos-only).
+- **Python 3.9 or newer.** The system `/usr/bin/python3` is enough — the
+  project has no third-party dependencies and there is nothing to `pip
+  install`.
+- At least one Claude agent that has run on this machine, so there is
+  something to read.
+
+## Quick start
+
+Run it in the foreground first. Nothing is installed and nothing persists, so
+this is the cheapest way to see whether it works on your machine:
+
+```bash
+git clone https://github.com/joekogit/agent-fleet.git
+cd agent-fleet
+python3 -m fleet
+```
+
+Open <http://127.0.0.1:8787>. Press Ctrl-C to stop.
+
+If the page loads but says "No agents active in the last 24 hours", the server
+is fine and simply found no data — see [Configuration](#configuration).
+
+Once you're happy with it, install it as a background service so it starts at
+login:
+
+```bash
+./install.sh
+```
+
 ## Data sources
 
 Agent Fleet reads two places on disk, and only reads them — see
@@ -30,16 +62,31 @@ If one adapter fails to read a file (corrupt JSON, a session mid-write), that
 one session is skipped or shown with an error badge; it never blanks out the
 rest of the fleet.
 
-## Read-only
+## Configuration
 
-Agent Fleet never writes, moves, or deletes anything under `~/.claude/` or
-`~/Library/Application Support/Claude/`. The only things it writes are its own
-log file (`~/Library/Logs/agent-fleet.log`), its `launchd` plist
-(`~/Library/LaunchAgents/`), and files inside this repo.
+Everything is optional; the defaults are the standard Claude locations.
 
-The server also only binds `127.0.0.1` (loopback). It is not reachable from
-your network — the page shows working directories and prompt fragments, so
-that matters.
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `AGENT_FLEET_HOME` | `~` | The home directory the CLI adapter looks under, i.e. where it expects `.claude/`. Point this at a second Claude install or a copy of another machine's data. |
+| `AGENT_FLEET_APP_SUPPORT` | `~/Library/Application Support/Claude` | The desktop app's support directory. |
+| `PORT` | `8787` | Read by `install.sh` only. |
+
+Both paths are `~`-expanded, and an exported-but-empty value is treated as
+unset. The foreground server also takes `--port` and `--host`:
+
+```bash
+python3 -m fleet --port 9000
+AGENT_FLEET_HOME=~/other-machine python3 -m fleet
+PORT=9000 ./install.sh
+```
+
+`install.sh` copies whichever of the two path variables are set at install
+time into the launchd job, since a launchd service inherits nothing from your
+shell. If you change them later, re-run `./install.sh` to update the service.
+
+`--host` only accepts a loopback address; anything else is refused rather than
+warned about. See [Read-only](#read-only).
 
 ## Install / uninstall
 
@@ -50,7 +97,9 @@ that matters.
 This installs a `launchd` user agent (`com.agentfleet.dashboard`) that
 starts the dashboard at login and restarts it automatically if it ever
 crashes. It's idempotent — safe to re-run any time you pull new code, to pick
-up changes.
+up changes. It checks your Python version, waits for the port to actually
+answer before reporting success, and warns you if it can't find any Claude
+data to read.
 
 By default it serves on port 8787. Override with `PORT=<n> ./install.sh`.
 
@@ -62,6 +111,18 @@ Stops and removes the `launchd` agent. It leaves the repo untouched — run it
 any time you want to stop the dashboard for good.
 
 Logs live at `~/Library/Logs/agent-fleet.log`.
+
+## Read-only
+
+Agent Fleet never writes, moves, or deletes anything under `~/.claude/` or
+`~/Library/Application Support/Claude/`. The only things it writes are its own
+log file (`~/Library/Logs/agent-fleet.log`), its `launchd` plist
+(`~/Library/LaunchAgents/`), and files inside this repo.
+
+The server also only binds `127.0.0.1` (loopback). It is not reachable from
+your network — the page shows working directories and prompt fragments, so
+that matters. Non-loopback `Host` headers are rejected too, so a DNS-rebinding
+attempt from a page in your browser cannot reach it either.
 
 ## Using it as an app window
 
@@ -88,6 +149,32 @@ model pricing before trusting any number the dashboard shows — the shipped
 values are starting points and go stale whenever pricing changes. A model
 missing from the table shows no cost rather than a plausible-looking wrong
 one.
+
+## Development
+
+```bash
+python3 -m unittest discover tests
+```
+
+No dependencies, no build step, no test runner to install.
+
+Two of those tests (`tests/test_smoke.py`) run against whatever real Claude
+data is on your machine rather than fixtures; every other test uses the
+fixtures in `tests/fixtures/`. The cache-performance one skips itself if you
+don't have enough transcript history for its measurement to mean anything, so
+a fresh machine still gets a green suite.
+
+## Why macOS only
+
+Two things tie it to macOS: the desktop app adapter reads
+`~/Library/Application Support/Claude`, and `install.sh` builds a `launchd`
+user agent.
+
+Neither is fundamental. The CLI half reads `~/.claude`, which is the same
+everywhere, and the process-liveness checks are plain POSIX — so the core
+would run on Linux with a `systemd --user` unit in place of the launchd one
+and a corrected desktop path. That work simply hasn't been done or tested,
+so the project claims macOS rather than pretending otherwise.
 
 ## Known limitations
 
@@ -116,3 +203,13 @@ dispatching parent looks silent for the whole dispatch — the same silence
 that would otherwise mean "waiting on you." Agent Fleet knows the dispatch
 is outstanding and reports `busy` instead, with a reason like "working — 1
 sub-agent running (5m since its own last write)."
+
+**These file formats are undocumented.** Agent Fleet reads Claude's on-disk
+session and transcript files, which are internal and can change without
+notice. When that happens the affected sessions degrade to an error badge
+rather than taking the page down, but a Claude update can still stop parts of
+the dashboard from working until the adapters are updated.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
