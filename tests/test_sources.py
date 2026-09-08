@@ -257,3 +257,56 @@ class DiscoverAllTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnvOverrideTest(unittest.TestCase):
+    """The two machine-specific roots must be redirectable without editing source.
+
+    Someone with a non-standard layout, a second Claude install, or a copy of
+    another machine's data needs a way in that is not "fork it and edit a
+    constant". The defaults are read per-instance, not at import, so setting
+    the variable after `fleet.sources` is imported still takes effect.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    @contextlib.contextmanager
+    def env(self, **pairs):
+        with mock.patch.dict(os.environ, pairs, clear=False):
+            yield
+
+    def test_cli_home_follows_the_env_var(self):
+        with self.env(AGENT_FLEET_HOME=self.tmp):
+            self.assertEqual(CliAdapter().home, self.tmp)
+
+    def test_app_support_follows_the_env_var(self):
+        with self.env(AGENT_FLEET_APP_SUPPORT=self.tmp):
+            self.assertEqual(DesktopAdapter().app_support, self.tmp)
+
+    def test_explicit_argument_beats_the_env_var(self):
+        """Callers (and every existing test) pass paths directly; that must win."""
+        with self.env(AGENT_FLEET_HOME="/should/not/win",
+                      AGENT_FLEET_APP_SUPPORT="/should/not/win"):
+            self.assertEqual(CliAdapter(self.tmp).home, self.tmp)
+            self.assertEqual(DesktopAdapter(self.tmp).app_support, self.tmp)
+
+    def test_unset_falls_back_to_the_real_home(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("AGENT_FLEET_HOME", "AGENT_FLEET_APP_SUPPORT")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(CliAdapter().home, os.path.expanduser("~"))
+            self.assertTrue(
+                DesktopAdapter().app_support.endswith(
+                    "Library/Application Support/Claude"))
+
+    def test_empty_env_var_is_ignored_not_treated_as_root(self):
+        """An exported-but-empty var must not silently point the scan at ''."""
+        with self.env(AGENT_FLEET_HOME="", AGENT_FLEET_APP_SUPPORT=""):
+            self.assertEqual(CliAdapter().home, os.path.expanduser("~"))
+            self.assertTrue(DesktopAdapter().app_support)
+
+    def test_env_var_is_tilde_expanded(self):
+        with self.env(AGENT_FLEET_HOME="~/somewhere"):
+            self.assertEqual(
+                CliAdapter().home, os.path.expanduser("~/somewhere"))

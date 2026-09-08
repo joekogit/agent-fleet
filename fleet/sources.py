@@ -17,6 +17,18 @@ DEFAULT_HOME = os.path.expanduser("~")
 DEFAULT_APP_SUPPORT = os.path.expanduser(
     "~/Library/Application Support/Claude"
 )
+# Both roots are machine-specific, so both are redirectable without editing
+# source: a second Claude install, a non-standard layout, or a copy of another
+# machine's data. Read per-instance rather than at import, so setting the
+# variable after this module is imported still takes effect.
+HOME_ENV = "AGENT_FLEET_HOME"
+APP_SUPPORT_ENV = "AGENT_FLEET_APP_SUPPORT"
+
+
+def _env_path(name, fallback):
+    """An exported-but-empty variable means "unset", not "scan from ''"."""
+    value = (os.environ.get(name) or "").strip()
+    return os.path.expanduser(value) if value else fallback
 # Exited CLI sessions stay on the board this long, matching the spec's 24h
 # fleet scope. Beyond it they are not even constructed.
 ORPHAN_WINDOW = 86400.0
@@ -61,7 +73,7 @@ class CliAdapter:
     source = "cli"
 
     def __init__(self, home=None):
-        self.home = home or DEFAULT_HOME
+        self.home = home or _env_path(HOME_ENV, DEFAULT_HOME)
 
     def discover(self):
         live = self._from_registry()
@@ -188,7 +200,8 @@ class DesktopAdapter:
     source = "app"
 
     def __init__(self, app_support=None):
-        self.app_support = app_support or DEFAULT_APP_SUPPORT
+        self.app_support = app_support or _env_path(
+            APP_SUPPORT_ENV, DEFAULT_APP_SUPPORT)
 
     def discover(self):
         out = []
