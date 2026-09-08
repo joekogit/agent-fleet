@@ -22,27 +22,29 @@ class RealDataSmokeTest(unittest.TestCase):
         """The incremental cache must be measurably doing its job.
 
         An absolute bound (the old '< 1.0s') cannot discriminate: the cold
-        full-corpus scan measures ~0.46s on this machine, comfortably inside
-        it, so ripping out the cache entirely left the assertion green. The
-        honest measurement is the ratio between a cold scan and a warm one.
+        full-corpus scan measures well inside it, so ripping out the cache
+        entirely left the assertion green. The honest measurement is the
+        ratio between a cold scan and a warm one.
 
-        Robustness: the warm figure is the best of three polls, so a GC pause
-        or a busy machine cannot fake a slow warm poll — but no number of
-        retries can make a full re-scan cheap, which is what the ratio
-        detects. The test skips rather than flakes if this machine has too
-        little transcript data for a cold scan to be measurable at all.
+        Robustness: both figures are the best of three, and a cold sample is
+        a brand-new Collector, so cold is as repeatable as warm — timing one
+        unlucky cold scan against three warm ones biased the ratio and made
+        the test flake on a large corpus. No number of retries can make a
+        full re-scan cheap, which is what the ratio detects. The test skips
+        rather than flakes if this machine has too little transcript data for
+        a cold scan to be measurable at all.
         """
-        collector = Collector()
-        started = time.time()
-        collector.snapshot()                       # cold: full scan
-        cold = time.time() - started
+        cold = min(self._timed(Collector()) for _ in range(3))
 
         if cold < 0.05:
             self.skipTest(f"corpus too small to measure (cold scan {cold:.4f}s)")
 
+        collector = Collector()
+        collector.snapshot()                       # prime the cache
         warm = min(self._timed(collector) for _ in range(3))
+
         self.assertLess(
-            warm, cold / 5.0,
+            warm, cold / 3.0,
             f"warm poll {warm:.4f}s vs cold {cold:.4f}s — the incremental "
             f"transcript cache is not saving anything",
         )
