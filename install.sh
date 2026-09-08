@@ -11,10 +11,46 @@ PORT="${PORT:-8787}"
 
 if [ -z "$PYTHON" ]; then
   echo "python3 not found on PATH." >&2
+  echo "Agent Fleet needs Python 3.9 or newer (macOS ships one at /usr/bin/python3)." >&2
   exit 1
 fi
 
+# Existing-but-too-old is a different failure from missing, and it surfaces far
+# later (as a SyntaxError in the log) if it is not caught here.
+if ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+  echo "Python 3.9 or newer required; $PYTHON is $("$PYTHON" -V 2>&1)." >&2
+  exit 1
+fi
+
+# Neither source existing is not an install failure, but it is the whole reason
+# the board would come up empty — say so now rather than let it look broken.
+CLI_DIR="${AGENT_FLEET_HOME:-$HOME}/.claude"
+APP_DIR="${AGENT_FLEET_APP_SUPPORT:-$HOME/Library/Application Support/Claude}"
+if [ ! -d "$CLI_DIR" ] && [ ! -d "$APP_DIR" ]; then
+  echo "Warning: found no Claude data to read." >&2
+  echo "  looked for: $CLI_DIR" >&2
+  echo "  looked for: $APP_DIR" >&2
+  echo "The dashboard will install and run, but show an empty fleet until a" >&2
+  echo "Claude session writes to one of those. Override either location with" >&2
+  echo "AGENT_FLEET_HOME / AGENT_FLEET_APP_SUPPORT." >&2
+fi
+
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+
+# A launchd job inherits nothing from this shell, so any path override in
+# effect at install time has to be written into the plist or the installed
+# service would silently ignore it.
+ENV_BLOCK=""
+if [ -n "${AGENT_FLEET_HOME:-}" ] || [ -n "${AGENT_FLEET_APP_SUPPORT:-}" ]; then
+  ENV_BLOCK="  <key>EnvironmentVariables</key>
+  <dict>"
+  [ -n "${AGENT_FLEET_HOME:-}" ] && ENV_BLOCK="$ENV_BLOCK
+    <key>AGENT_FLEET_HOME</key><string>$AGENT_FLEET_HOME</string>"
+  [ -n "${AGENT_FLEET_APP_SUPPORT:-}" ] && ENV_BLOCK="$ENV_BLOCK
+    <key>AGENT_FLEET_APP_SUPPORT</key><string>$AGENT_FLEET_APP_SUPPORT</string>"
+  ENV_BLOCK="$ENV_BLOCK
+  </dict>"
+fi
 
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -32,6 +68,7 @@ cat > "$PLIST" <<PLIST_EOF
     <string>$PORT</string>
   </array>
   <key>WorkingDirectory</key><string>$REPO</string>
+$ENV_BLOCK
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$HOME/Library/Logs/agent-fleet.log</string>
